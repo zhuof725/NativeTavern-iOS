@@ -3,6 +3,8 @@ Vendor/
 node_modules/
 build/
 DerivedData/
+artifacts/
+__pycache__/
 *.xcodeproj/
 App/Info.plist
 *.xcuserstate

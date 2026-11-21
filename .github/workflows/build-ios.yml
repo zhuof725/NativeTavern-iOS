@@ -1,0 +1,78 @@
+name: Build unsigned iOS IPA
+run-name: NativeTavern iOS prototype · ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: Bundle identifier for this prototype
+        required: true
+        default: org.example.nativetavern
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ios-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Test embedded host
+        run: npm test
+
+      - name: Prepare XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          if ! command -v xcodegen >/dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Fetch verified NodeMobile framework
+        run: bash Scripts/fetch-runtime.sh
+
+      - name: Generate native Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Archive device app and package unsigned IPA
+        env:
+          BUNDLE_IDENTIFIER: ${{ inputs.bundle_id }}
+        run: bash Scripts/build-ipa.sh
+
+      - name: Upload IPA and build receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NativeTavern-unsigned-ipa
+          path: |
+            artifacts/NativeTavern-unsigned.ipa
+            artifacts/BUILD-INFO.json
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NativeTavern-build-log
+          path: artifacts/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
