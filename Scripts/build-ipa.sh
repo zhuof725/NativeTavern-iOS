@@ -26,8 +26,8 @@ executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.
 [[ -f "$app/$executable" && -f "$app/Frameworks/NodeMobile.framework/NodeMobile" && -f "$app/Engine/boot.mjs" ]] || {
   echo 'Archive is missing the app executable, embedded runtime or engine entry.' >&2; exit 1;
 }
-xcrun lipo -verify_arch arm64 "$app/$executable"
-xcrun lipo -verify_arch arm64 "$app/Frameworks/NodeMobile.framework/NodeMobile"
+xcrun lipo "$app/$executable" -verify_arch arm64
+xcrun lipo "$app/Frameworks/NodeMobile.framework/NodeMobile" -verify_arch arm64
 mkdir -p "$work/package/Payload"
 ditto "$app" "$work/package/Payload/NativeTavern.app"
 ipa="$output/NativeTavern-unsigned.ipa"
