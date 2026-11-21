@@ -1,6 +1,12 @@
 # Native Tavern：SwiftUI + App 内本地运行时
 
-状态：M0 原生架构接入原型，**不是已移植完成的 SillyTavern，也不是可安装成品**。
+状态：M0 原生架构接入原型，**不是已移植完成的 SillyTavern**。
+
+## 已完成云端编译与打包
+
+2026-11-22（UTC+08:00）已通过 GitHub Actions 的 macOS / Xcode 26.6 完成 SwiftUI/Objective-C++ 编译、真机 ARM64 归档和待签名 IPA 打包。构建来源提交为 `6beae4d0e90e3cd8d916ccda7a385e0f25d3bfb6`；[成功的构建记录](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/44924213846)。
+
+产物为 `NativeTavern-unsigned.ipa`，约 18.5 MiB，包含 NodeMobile 和本地通信入口；已验证结构、ARM64、ZIP CRC 与 SHA256。**安装前仍需重签；未完成真机运行测试，也未接入原版酒馆核心。** 手动重新构建与下载说明见 [GitHub-Build](Docs/GitHub-Build.md)。
 
 ## 最新要求
 
@@ -24,7 +30,7 @@ SwiftUI → URLSession → 127.0.0.1 临时端口 → 本地引擎接口
 
 `127.0.0.1` 是同一设备内的回环通信，不是连接电脑、云服务或其他设备。通信宿主只绑定此地址；每次启动生成新的随机令牌，以带本次启动 UUID 的私有文件交付。Swift 侧拒绝外部主机、过期启动信息和 HTTP 重定向。没有远程后端兜底选项。
 
-NodeMobile 选择 `digidem/nodejs-mobile` 的 `24.20.0-0`，与参考项目所选版本一致；已向其官方 GitHub 发布 API 核对 SHA256。这里只记录锁定摘要与获取脚本，**尚未下载、链接或在手机运行此框架**。没有移植参考项目的根文件系统、Git、Python 或其他原生适配组件。
+NodeMobile 选择 `digidem/nodejs-mobile` 的 `24.20.0-0`，与参考项目所选版本一致；已向其官方 GitHub 发布 API 核对 SHA256。框架已在云端下载、校验、链接并嵌入设备归档；**尚未在实际手机运行验证**。没有移植参考项目的根文件系统、Git、Python 或其他原生适配组件。
 
 ## 本次真正完成了什么
 
@@ -43,7 +49,7 @@ NodeMobile 选择 `digidem/nodejs-mobile` 的 `24.20.0-0`，与参考项目所�
 3. 角色卡导入、聊天保存、模型生成、流式回复、插件及后台生命周期尚未接入。
 4. 依赖 DOM/jQuery 修改页面的原版前端扩展不能直接修改 SwiftUI。此类扩展必须单独适配；当前主界面没有 WebView，也不承诺任意网页扩展原样工作。
 5. NodeMobile 不会让 iOS 自动获得桌面的任意子进程、系统命令、原生插件或文件访问能力。
-6. 未运行 Swift 编译、XcodeGen、Xcode、模拟器或真机测试，没有 IPA。此前 Tauri 分支的 451 项通过结果不能算作本原生工程的测试结果。
+6. 已完成云端 XcodeGen、Swift 编译和 ARM64 设备归档；但没有签名、模拟器运行或真机运行验收。此前 Tauri 分支的 451 项通过结果不能算作本原生工程的测试结果。
 
 ## 在当前环境验证
 
@@ -53,9 +59,9 @@ NodeMobile 选择 `digidem/nodejs-mobile` 的 `24.20.0-0`，与参考项目所�
 npm test
 ```
 
-JS 在本机 Node 22.23.4 上验证，不能等同于在 iPhone 的 NodeMobile 24 上验证。Xcode 工程描述另做 YAML 语法检查；不等于 XcodeGen 生成或编译成功。
+JS 已在本机 Node 22.23.4 及 GitHub macOS 的 Node 24 测试通过；这不能等同于在 iPhone 的 NodeMobile 24 上验证。XcodeGen 和设备归档已在云端实际执行成功。
 
-## macOS 上的后续构建入口（尚未实际验收）
+## macOS 本机构建参考（模拟器运行尚未验收）
 
 初始目标设为 iPhone / iOS 17.0+，尚未确定用户的设备系统版本。
 
