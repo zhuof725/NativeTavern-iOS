@@ -1,0 +1,8 @@
+{
+  "repository": "digidem/nodejs-mobile",
+  "version": "24.20.0-0",
+  "asset": "nodejs-mobile-ios-24.20.0-0.zip",
+  "sha256": "f97c5f368f5982fdc062b0f97d96d7696f94dbaf286fbd0d3c515b596088bca8",
+  "verifiedAgainst": "GitHub release asset digest on 2026-11-21",
+  "fishPocketReferenceCommit": "8be4c915986c886b4202a6660ecc691185e7ea6d"
+}

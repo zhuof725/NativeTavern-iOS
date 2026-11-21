@@ -1,0 +1,10 @@
+.DS_Store
+Vendor/
+node_modules/
+build/
+DerivedData/
+*.xcodeproj/
+App/Info.plist
+*.xcuserstate
+*.p12
+*.mobileprovision
