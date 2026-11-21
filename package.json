@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
-  "scripts": { "test": "node --test --test-concurrency=1 Tests/*.test.mjs" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 Tests/*.test.mjs",
+    "test:transport": "node --test --test-concurrency=1 Tests/host.test.mjs",
+    "core:sync": "sh Scripts/sync-core.sh",
+    "core:patch": "sh Scripts/patch-core.sh",
+    "core:bundle": "sh Scripts/build-lib-bundle.sh"
+  }
 }

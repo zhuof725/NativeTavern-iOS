@@ -26,6 +26,13 @@ executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.
 [[ -f "$app/$executable" && -f "$app/Frameworks/NodeMobile.framework/NodeMobile" && -f "$app/Engine/boot.mjs" ]] || {
   echo 'Archive is missing the app executable, embedded runtime or engine entry.' >&2; exit 1;
 }
+# The engine must ship the vendored core it runs, not just its entry point.
+[[ -f "$app/Engine/core/server.js" && -f "$app/Engine/core/public/script.js" ]] || {
+  echo 'Archive is missing the embedded SillyTavern core.' >&2; exit 1;
+}
+[[ -d "$app/Engine/core/node_modules" ]] || {
+  echo 'Archive is missing the core runtime dependencies.' >&2; exit 1;
+}
 xcrun lipo "$app/$executable" -verify_arch arm64
 xcrun lipo "$app/Frameworks/NodeMobile.framework/NodeMobile" -verify_arch arm64
 mkdir -p "$work/package/Payload"
@@ -40,8 +47,8 @@ import { execFileSync } from 'node:child_process';
 const receipt = {
   artifact: 'NativeTavern-unsigned.ipa',
   signing: 'unsigned; re-signing is required before installation',
-  applicationStage: 'M0 native transport prototype',
-  sillyTavernCoreIntegrated: false,
+  applicationStage: 'M1 upstream core embedded',
+  sillyTavernCoreIntegrated: true,
   sourceCommit: process.env.GITHUB_SHA || null,
   repository: process.env.GITHUB_REPOSITORY || null,
   workflowRun: process.env.GITHUB_RUN_ID || null,
@@ -51,4 +58,4 @@ const receipt = {
 fs.writeFileSync(process.argv[2], JSON.stringify(receipt, null, 2) + '\n');
 NODE
 (cd "$output" && shasum -a 256 NativeTavern-unsigned.ipa BUILD-INFO.json > SHA256SUMS)
-echo 'Unsigned device IPA packaged. This build still does not include the SillyTavern core.'
+echo 'Unsigned device IPA packaged, with the upstream SillyTavern core embedded.'

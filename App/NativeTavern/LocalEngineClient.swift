@@ -46,9 +46,9 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 actor LocalEngineClient {
-    private let baseURL: URL
-    private let token: String
-    private let session: URLSession
+    let baseURL: URL
+    let token: String
+    let session: URLSession
 
     init(endpoint: EngineEndpoint, launchID: String) throws {
         baseURL = try endpoint.validatedURL(expectedLaunchID: launchID)

@@ -1,0 +1,11 @@
+{
+  "name": "native-tavern-engine",
+  "private": true,
+  "type": "module",
+  "description": "Runs the vendored upstream SillyTavern server and frontend core inside the app.",
+  "main": "boot.mjs",
+  "dependencies": {
+    "happy-dom": "^15.11.7",
+    "jquery": "^3.7.1"
+  }
+}

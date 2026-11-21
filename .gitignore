@@ -1,12 +1,14 @@
-.DS_Store
+# Runtime downloads (Scripts/fetch-runtime.sh) and build inputs are not sources.
 Vendor/
-node_modules/
-build/
-DerivedData/
-artifacts/
-__pycache__/
-*.xcodeproj/
-App/Info.plist
-*.xcuserstate
-*.p12
-*.mobileprovision
+*.ipa
+*.xcarchive
+Engine/node_modules/
+Engine/core/node_modules/
+Engine/core/public/lib.bundle.js
+data/
+*.log
+.DS_Store
+
+# Runtime state created by the vendored server on first start.
+Engine/core/config.yaml
+Engine/core/data/

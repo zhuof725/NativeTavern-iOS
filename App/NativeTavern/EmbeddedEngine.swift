@@ -13,6 +13,8 @@ final class EmbeddedEngine: ObservableObject {
 
     static let shared = EmbeddedEngine()
     @Published private(set) var phase: Phase = .idle
+    /// A ready client once the launch handshake succeeded.
+    @Published private(set) var client: LocalEngineClient?
     private var attemptedStart = false
     private var workerExit: Int32?
 
@@ -74,7 +76,10 @@ final class EmbeddedEngine: ObservableObject {
                    endpoint.launchID == launchID {
                     let client = try LocalEngineClient(endpoint: endpoint, launchID: launchID)
                     let status = try await client.status()
-                    if workerExit == nil { phase = .transportReady(status) }
+                    if workerExit == nil {
+                        self.client = client
+                        phase = .transportReady(status)
+                    }
                     return
                 }
                 try await Task.sleep(nanoseconds: 100_000_000)
