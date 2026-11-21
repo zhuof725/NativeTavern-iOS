@@ -32,7 +32,21 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Test embedded host
+      - name: Install engine dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The vendored core keeps upstream's package.json, so this installs
+          # exactly the dependency tree that revision declares.
+          (cd Engine/core && npm install --omit=dev --no-audit --no-fund)
+
+      - name: Build the frontend library bundle
+        run: |
+          npx --yes esbuild@0.25.10 Engine/shim/lib-source.mjs \
+            --bundle --format=esm --platform=node --target=es2022 \
+            --outfile=Engine/core/public/lib.bundle.js --log-level=warning
+
+      - name: Test embedded engine
         run: npm test
 
       - name: Prepare XcodeGen

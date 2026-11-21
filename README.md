@@ -1,83 +1,109 @@
-# Native Tavern：SwiftUI + App 内本地运行时
+# Native Tavern：SwiftUI + 内置原版酒馆核心
 
-状态：M0 原生架构接入原型，**不是已移植完成的 SillyTavern**。
+状态：**原版 SillyTavern 核心已在 App 内运行**，世界书、宏、提示词组装使用上游原始代码。
+模型生成与角色卡导入尚未接入。
 
-## 已完成云端编译与打包
+## 最关键的架构决定：不重写核心
 
-2026-11-22（UTC+08:00）已通过 GitHub Actions 的 macOS / Xcode 26.6 完成 SwiftUI/Objective-C++ 编译、真机 ARM64 归档和待签名 IPA 打包。构建来源提交为 `6beae4d0e90e3cd8d916ccda7a385e0f25d3bfb6`；[成功的构建记录](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/44924213846)。
+SillyTavern 的「聊天大脑」不在 Node 后端里。真正的逻辑在 `public/script.js` 及其导入的前端模块中：
 
-产物为 `NativeTavern-unsigned.ipa`，约 18.5 MiB，包含 NodeMobile 和本地通信入口；已验证结构、ARM64、ZIP CRC 与 SHA256。**安装前仍需重签；未完成真机运行测试，也未接入原版酒馆核心。** 手动重新构建与下载说明见 [GitHub-Build](Docs/GitHub-Build.md)。
+| 能力 | 实际实现位置 |
+|---|---|
+| 世界书扫描与激活 | `public/scripts/world-info.js`（6,408 行） |
+| 宏展开（`{{user}}`/`{{char}}`/`{{roll}}`/变量…） | `public/scripts/macros.js` + `macros/` 宏引擎 |
+| 提示词编排 | `public/scripts/openai.js`（7,396 行） |
+| 生成流程 | `public/script.js` 的 `Generate()` |
 
-## 最新要求
+这些逻辑依赖 DOM、jQuery 和大量全局状态。**用 Swift 重写它们等于写另一个程序**，而且会永久落后于上游。
 
-2026-11-21 用户明确：酒馆引擎放进 iPhone App 内，不依赖电脑或外部酒馆服务器；主界面必须使用 SwiftUI 原生实现。参考 Fish Pocket 的嵌入式运行时模式，不再把 Tauri/WebView 主界面作为开发主线。
-
-- `../TauriTavern/` 及其首批补丁完整保留，仅作为数据、接口和行为对照。
-- 本目录是独立的新原生工程，不包含 Fish Pocket 源代码、商标或图标。
-- 不依赖外部酒馆后端，不等于本地运行大语言模型。将来调用在线模型 API 时仍需联网；离线模型推理尚未实现。
-
-## 架构
+所以本工程的做法是：把上游源码原样放进 App，让它照原样运行。
 
 ```text
-SwiftUI 原生界面
-  └─ EmbeddedEngine：App 生命周期内仅启动一次
+SwiftUI 界面（原生，无 WebView）
+  └─ EmbeddedEngine：App 生命周期内启动一次
       └─ Objective-C++ → node_start → NodeMobile.xcframework
-          └─ Engine/boot.mjs → App 内本机通信宿主
+          └─ Engine/boot.mjs
+              ├─ 启动原版 server.js（Express 后端，随机回环端口）
+              ├─ 启动原版 public/script.js（完整前端核心，跑在最小 DOM 上）
+              └─ 令牌网关：只监听 127.0.0.1，逐次启动随机令牌
 
-SwiftUI → URLSession → 127.0.0.1 临时端口 → 本地引擎接口
-                                      └─ 原版核心适配：尚未接入
+SwiftUI → URLSession → 127.0.0.1/engine/rpc → 原版模块
 ```
 
-`127.0.0.1` 是同一设备内的回环通信，不是连接电脑、云服务或其他设备。通信宿主只绑定此地址；每次启动生成新的随机令牌，以带本次启动 UUID 的私有文件交付。Swift 侧拒绝外部主机、过期启动信息和 HTTP 重定向。没有远程后端兜底选项。
+## 已实测可用的能力
 
-NodeMobile 选择 `digidem/nodejs-mobile` 的 `24.20.0-0`，与参考项目所选版本一致；已向其官方 GitHub 发布 API 核对 SHA256。框架已在云端下载、校验、链接并嵌入设备归档；**尚未在实际手机运行验证**。没有移植参考项目的根文件系统、Git、Python 或其他原生适配组件。
+在引擎内（Linux Node 22）端到端验证通过：
 
-## 本次真正完成了什么
+1. **世界书**：通过 API 写入条目 → 按 UI 同一入口激活 → 关键词扫描命中 → 内容进入最终提示词。
+2. **宏**：`{{user}}`、`{{char}}` 由上游宏引擎解析（`User meets Seraphina`）。
+3. **提示词组装**：`openai.js` 的真实 pipeline 产出完整消息序列，含角色描述、世界书注入、聊天历史。
 
-- SwiftUI 原生角色页、聊天页和运行状态页；前两页明确显示“尚未接入”，没有虚构角色或模拟聊天。
-- App 内专用线程、单次 Node 初始化、连续 argv 内存及设备 CPU 能力保护的接入代码。
-- 原生客户端的回环地址白名单、会话令牌、请求 ID 与协议版本验证，以及禁止自动重定向。
-- 使用 Node 内置模块实现的本机通信宿主与启动信息发布。
-- 11 项可在现有 Linux Node 环境运行的行为测试，包括真实子进程启动、私有握手文件与本地 RPC 往返；全部通过。
-
-当前唯一实现的 RPC 是 `engine.status`。它明确返回 `sillyTavernCoreReady: false`。调用聊天等未接入方法返回 `501 / METHOD_NOT_IMPLEMENTED`，不会用模型直连或假回复冒充原版引擎。
-
-## 还没有完成什么
-
-1. 原版 SillyTavern 后端尚未打包到本工程。
-2. 世界书、宏、正则、预设、提示词编排等逻辑仍需从原版前端 JS 中抽离；原版 `public/script.js` 的 `Generate()` 与 `public/scripts/world-info.js` 的 `getWorldInfoPrompt()` 证明这些不只是 Node 后端功能。
-3. 角色卡导入、聊天保存、模型生成、流式回复、插件及后台生命周期尚未接入。
-4. 依赖 DOM/jQuery 修改页面的原版前端扩展不能直接修改 SwiftUI。此类扩展必须单独适配；当前主界面没有 WebView，也不承诺任意网页扩展原样工作。
-5. NodeMobile 不会让 iOS 自动获得桌面的任意子进程、系统命令、原生插件或文件访问能力。
-6. 已完成云端 XcodeGen、Swift 编译和 ARM64 设备归档；但没有签名、模拟器运行或真机运行验收。此前 Tauri 分支的 451 项通过结果不能算作本原生工程的测试结果。
-
-## 在当前环境验证
-
-需要 Node 22 或以上，无第三方 npm 依赖：
+回归测试：
 
 ```sh
-npm test
+npm test        # 8 项传输层 + 1 项完整启动（真实启动原版后端与前端核心）
 ```
 
-JS 已在本机 Node 22.23.4 及 GitHub macOS 的 Node 24 测试通过；这不能等同于在 iPhone 的 NodeMobile 24 上验证。XcodeGen 和设备归档已在云端实际执行成功。
+## 与原版的差异（全部记录在 `Scripts/patch-core.sh`）
 
-## macOS 本机构建参考（模拟器运行尚未验收）
+上游源码只改两处，且都是「不要在手机上跑打包器」：
 
-初始目标设为 iPhone / iOS 17.0+，尚未确定用户的设备系统版本。
+| 文件 | 改动 | 原因 |
+|---|---|---|
+| `src/middleware/webpack-serve.js` | 存在 `public/lib.bundle.js` 时跳过 Webpack；`webpack` 改为动态导入 | 手机冷启动不应运行 bundler |
+| `webpack.config.js` | 不再静态导入 `webpack`（仅用于缓存键） | 同上 |
 
-需要完整 Xcode、Node、XcodeGen，以及真实安装时的签名配置：
+`lib.bundle.js` 由 `Scripts/build-lib-bundle.sh` 用 esbuild 预构建，与上游 Webpack 产物用途相同。
+若上游文件结构变化，`patch-core.sh` 会明确报错而不是静默产出错误代码。
+
+## 还没完成
+
+1. **模型生成**：`prompt.build` 已产出正确的请求消息，但还没有把请求发给模型、处理流式回复、把回复写回聊天。
+2. **角色卡导入**：PNG/CHARX/JSON 解析在上游 `char-data.js` 中已加载，但导入 UI 和文件选择未接。
+3. **预设与世界书管理界面**：数据层已通，SwiftUI 界面未做。
+4. **依赖裁剪**：`Engine/core/node_modules` 仍包含上游全部依赖，其中相当一部分在实际使用中不会被加载。
+5. **真机验收**：云端已完成 Xcode 编译与归档，但未在 iPhone 上运行验证。
+
+## 首次启动较慢的原因
+
+原版后端首次启动会复制内容模板并按需加载大量模块。之后启动只是读取已有数据。
+如果启动明显变慢，先看 `Engine/core/data/` 是否已初始化。
+
+## 构建
+
+云端（推荐）：
+
+```sh
+gh workflow run build-ios.yml -f bundle_id=com.example.nativetavern
+```
+
+工作流会安装原版依赖、预构建 `lib.bundle.js`、运行测试，然后归档并打包未签名 IPA。
+
+本地 macOS：
 
 ```sh
 bash Scripts/fetch-runtime.sh
+(cd Engine/core && npm install --omit=dev)
+bash Scripts/build-lib-bundle.sh
 xcodegen generate
 xcodebuild -project NativeTavern.xcodeproj -scheme NativeTavern \
   -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
 ```
 
-获取脚本校验锁定的官方摘要，且不会静默替换已有框架。不要把模拟器构建等同于已签名真机 App；需要在实际设备检查 Node 启动、CPU 能力判断、ATS 回环访问、前后台切换及数据恢复。
+## 版本锁定
 
-## 迁移顺序
+| 组件 | 版本 |
+|---|---|
+| SillyTavern | `82b64a45c34facbc98ff4b9f33c067d3ccab6a17`（release，2026-11-19） |
+| NodeMobile | `digidem/nodejs-mobile` `24.20.0-0`（SHA256 见 `Runtime/node-mobile.lock.json`） |
+| 参考实现 | Fish Pocket `8be4c915986c886b4202a6660ecc691185e7ea6d` |
 
-M0 是当前通信和生命周期基础；随后应先完成角色卡与聊天数据的真实读写，再接提示词/世界书/宏/预设的可测试核心和模型生成，最后逐个适配具体扩展。保持 SwiftUI 主界面，不把网页整体嵌回去冒充原生迁移。
+本工程不包含 Fish Pocket 的源码、商标或图标。
 
-参考源码版本：Fish Pocket `8be4c915986c886b4202a6660ecc691185e7ea6d`；SillyTavern 对照 `82b64a45c34facbc98ff4b9f33c067d3ccab6a17`。
+## 更新上游
+
+```sh
+bash Scripts/sync-core.sh <commit>
+```
+
+会重新 vendor 源码、安装该版本声明的依赖、重新打补丁、重建 bundle，然后 `npm test` 应该全绿。
