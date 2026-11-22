@@ -23,20 +23,6 @@ final class ChatStore: ObservableObject {
         self.avatar = avatar
     }
 
-    /// Loads the chat the screen is bound to. Called on every appearance so the
-    /// list's "latest conversation" is what the reading column shows.
-    func bind(fileName desired: String?) async {
-        guard !busy else { return }
-        let wanted = desired ?? ""
-        let current = fileName
-        if wanted.isEmpty {
-            if current.isEmpty && messages.isEmpty { await startNew() }
-            return
-        }
-        if wanted == current && !messages.isEmpty { return }
-        await open(fileName: wanted)
-    }
-
     var canSend: Bool {
         !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

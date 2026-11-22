@@ -18,9 +18,9 @@ struct RootView: View {
         Group {
             switch app.phase {
             case .ready:
-                HomeView(app: app)
+                MainTabs(app: app)
             case .starting(let message):
-                LaunchView(message: message)
+                LaunchView(app: app, message: message)
             case .failed(let message):
                 LaunchFailureView(message: message)
             }
@@ -30,28 +30,39 @@ struct RootView: View {
                 await app.boot()
             }
         }
-        // Errors raised by inner screens are surfaced here; a failed launch has
-        // its own full-screen explanation instead of a popup over a spinner.
         .alert("出错了", isPresented: Binding(
-            get: { app.showErrorAlert && app.errorMessage != nil },
-            set: { shown in
-                if !shown {
-                    app.errorMessage = nil
-                    app.showErrorAlert = false
-                }
-            }
+            get: { app.errorMessage != nil },
+            set: { if !$0 { app.errorMessage = nil } }
         )) {
-            Button("好", role: .cancel) {
-                app.errorMessage = nil
-                app.showErrorAlert = false
-            }
+            Button("好", role: .cancel) { app.errorMessage = nil }
         } message: {
             Text(app.errorMessage ?? "")
         }
     }
 }
 
+private struct MainTabs: View {
+    @ObservedObject var app: AppModel
+
+    var body: some View {
+        TabView {
+            CharactersView(app: app)
+                .tabItem { Label("角色", systemImage: "person.2.fill") }
+
+            WorldInfoView(app: app)
+                .tabItem { Label("世界书", systemImage: "book.closed.fill") }
+
+            PresetsView(app: app)
+                .tabItem { Label("预设", systemImage: "slider.horizontal.3") }
+
+            SettingsView(app: app)
+                .tabItem { Label("设置", systemImage: "gearshape.fill") }
+        }
+    }
+}
+
 private struct LaunchView: View {
+    @ObservedObject var app: AppModel
     let message: String
 
     var body: some View {

@@ -54,7 +54,6 @@ struct WorldInfoView: View {
                 }
             }
             .navigationTitle("世界书")
-            .navigationBarTitleDisplayMode(.inline)
             .refreshable { await app.refreshBooks() }
             .navigationDestination(for: WorldBookSummary.self) { book in
                 WorldInfoBookView(app: app, book: book)

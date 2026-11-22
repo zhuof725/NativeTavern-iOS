@@ -88,10 +88,10 @@ struct CharactersView: View {
                 }
             }
             .sheet(isPresented: $creating) {
-                CharacterEditorView(app: app, character: nil, onSaved: nil)
+                CharacterEditorView(app: app, character: nil)
             }
             .sheet(item: $editing) { character in
-                CharacterEditorView(app: app, character: character, onSaved: nil)
+                CharacterEditorView(app: app, character: character)
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                 handleImport(result)
@@ -221,7 +221,7 @@ struct CharacterDetailView: View {
             }
         }
         .sheet(isPresented: $editing) {
-            CharacterEditorView(app: app, character: character, onSaved: nil)
+            CharacterEditorView(app: app, character: character)
         }
         .alert("删除这个角色？", isPresented: $confirmDeleteCharacter) {
             Button("取消", role: .cancel) {}
@@ -402,7 +402,6 @@ struct CharacterDetailView: View {
 struct CharacterEditorView: View {
     @ObservedObject var app: AppModel
     let character: CharacterSummary?
-    var onSaved: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft = CharacterDraft()
@@ -483,9 +482,6 @@ struct CharacterEditorView: View {
             if created == nil { error = app.errorMessage }
         }
         saving = false
-        if error == nil {
-            onSaved?()
-            dismiss()
-        }
+        if error == nil { dismiss() }
     }
 }
