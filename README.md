@@ -80,7 +80,8 @@ SwiftUI → URLSession → 127.0.0.1/engine/rpc → 原版模块
 3. **回环请求**（`dom/loopback.mjs`）：把页面相对路径指向内置后端并维护会话与 CSRF；对外部探测直接返回 503，不访问第三方。
 4. **模块解析**（`dom/loader.mjs`）：把 `/scripts/xxx.js` 这类页面路径映射到实际文件，把 `../lib.js` 映射到预构建 bundle。
 5. **可写工作目录**（`boot.mjs`）：上游把 `backups/`、默认头像和全局扩展目录解析为工作目录相对路径。
-   iOS 的 App 包是只读的，所以服务端在一个位于数据目录下的可写副本里运行；静态文件仍从包内读取。
+   iOS 的 App 包是只读的，所以服务端在一个位于数据目录下的可写副本里运行；`server.js` 自己的
+   `process.chdir(serverDirectory)` 被重定向到该目录，静态文件仍从包内读取。
 
 两处无头环境特有的初始化问题也已显式处理，不靠运气：
 

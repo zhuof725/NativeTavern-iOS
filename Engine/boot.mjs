@@ -195,13 +195,24 @@ async function startUpstream(root, dataDir, port) {
         }
     }
 
-    // Upstream reads these before its own argument parser runs. It also changes
-    // into its working directory, so the core root is captured beforehand.
+    // Upstream reads these before its own argument parser runs.
     globalThis.DATA_ROOT = nodeDataRoot;
     globalThis.NT_CORE_ROOT = root;
     process.env.SILLYTAVERN_DATAROOT = nodeDataRoot;
     process.chdir(workRoot);
-    console.log(`[upstream] working directory: ${workRoot}`);
+    log('upstream working directory', workRoot);
+
+    // server.js calls process.chdir(serverDirectory) unconditionally. That
+    // directory is inside the app bundle on iOS and is read-only, which is what
+    // made the first `mkdir('backups/')` fail. The call is redirected to the
+    // writable copy above; every path upstream builds from it is a runtime
+    // output, while its own files are reached through absolute paths.
+    const bundleRoot = path.resolve(root);
+    const realChdir = process.chdir.bind(process);
+    process.chdir = (target) => {
+        const resolved = path.resolve(String(target));
+        return realChdir(resolved === bundleRoot ? workRoot : target);
+    };
 
     process.argv = [
         process.execPath, path.join(root, 'server.js'),
