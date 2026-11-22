@@ -39,6 +39,9 @@ jobs:
           # The vendored core keeps upstream's package.json, so this installs
           # exactly the dependency tree that revision declares.
           (cd Engine/core && npm install --omit=dev --no-audit --no-fund)
+          # The engine scaffolding (DOM, transport, loader) has its own two
+          # dependencies; the core's tree does not cover it.
+          bash Scripts/install-engine-deps.sh
 
       - name: Build the frontend library bundle
         # Bundled from the core directory so the imports resolve against the
