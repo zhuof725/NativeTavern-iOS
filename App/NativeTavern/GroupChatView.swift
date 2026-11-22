@@ -499,7 +499,7 @@ struct GroupChatView: View {
 }
 
 private struct GroupMessageRow: View {
-    let client: LocalEngineClient
+    let client: LocalEngineClient?
     let message: ChatMessage
     let avatar: String
     let canSwipe: Bool
