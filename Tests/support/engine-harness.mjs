@@ -20,6 +20,15 @@ export async function installResolversAndBoot() {
         env: {},
     });
     let log = '';
+    if (process.env.NT_TEST_VERBOSE) {
+        const echo = (chunk) => {
+            for (const line of String(chunk).split('\n')) {
+                if (/\[core\]|\[upstream\]|Error|error/.test(line)) console.log(`  engine> ${line}`);
+            }
+        };
+        child.stdout.on('data', echo);
+        child.stderr.on('data', echo);
+    }
     child.stdout.on('data', (chunk) => { log += chunk; });
     child.stderr.on('data', (chunk) => { log += chunk; });
 
@@ -58,7 +67,11 @@ export async function installResolversAndBoot() {
             body: JSON.stringify({ id: randomUUID(), method, args }),
         });
         const body = await response.json();
-        if (body.error) throw new Error(`${body.error.code}: ${body.error.message}`);
+        if (body.error) {
+            // Include the engine's own log: its failures are only reported there.
+            const tail = log.split('\n').filter((line) => /\[core\]|\[upstream\]|Error/.test(line)).slice(-8).join(' | ');
+            throw new Error(`${body.error.code}: ${body.error.message}${tail ? ` [engine: ${tail}]` : ''}`);
+        }
         return body.result;
     };
 

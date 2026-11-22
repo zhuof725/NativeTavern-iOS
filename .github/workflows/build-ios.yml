@@ -46,7 +46,12 @@ jobs:
         run: bash Scripts/build-lib-bundle.sh
 
       - name: Test embedded engine
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          # Engine failures are reported inside the child process; keep its
+          # stdout so the log explains them instead of only the assertion.
+          NT_TEST_VERBOSE=1 npm test 2>&1 | tee /tmp/engine-tests.log
 
       - name: Prepare XcodeGen
         shell: bash
