@@ -41,10 +41,9 @@ jobs:
           (cd Engine/core && npm install --omit=dev --no-audit --no-fund)
 
       - name: Build the frontend library bundle
-        run: |
-          npx --yes esbuild@0.25.10 Engine/shim/lib-source.mjs \
-            --bundle --format=esm --platform=node --target=es2022 \
-            --outfile=Engine/core/public/lib.bundle.js --log-level=warning
+        # Bundled from the core directory so the imports resolve against the
+        # vendored dependencies, exactly as they do at runtime.
+        run: bash Scripts/build-lib-bundle.sh
 
       - name: Test embedded engine
         run: npm test

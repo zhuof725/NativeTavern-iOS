@@ -19,7 +19,7 @@ export { default as DOMPurify } from 'dompurify';
 export * as chevrotain from 'chevrotain';
 export * as Popper from '@popperjs/core';
 export { gzip, gzipSync } from 'fflate';
-export { sha256 } from './sha256.mjs';
+export { sha256 } from '../shim/sha256.mjs';
 
 // Upstream also exports these; the engine only needs them present.
 export const SVGInject = () => {};
@@ -57,7 +57,7 @@ import DOMPurify from 'dompurify';
 import * as chevrotain from 'chevrotain';
 import * as Popper from '@popperjs/core';
 import { gzip, gzipSync } from 'fflate';
-import { sha256 } from './sha256.mjs';
+import { sha256 } from '../shim/sha256.mjs';
 
 export const libs = {
     lodash, Fuse, DOMPurify, hljs, localforage, Handlebars, css, Bowser, DiffMatchPatch,
