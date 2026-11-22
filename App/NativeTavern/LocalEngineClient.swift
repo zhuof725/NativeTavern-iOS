@@ -56,7 +56,11 @@ actor LocalEngineClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
-        configuration.timeoutIntervalForRequest = 15
+        // Generation is synchronous from the app's point of view: this request
+        // stays open while the model writes. A short timeout would abandon a
+        // reply the core is still producing.
+        configuration.timeoutIntervalForRequest = 600
+        configuration.timeoutIntervalForResource = 900
         session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
