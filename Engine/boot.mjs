@@ -4,7 +4,7 @@
 // Nothing here reimplements SillyTavern: it starts upstream's own server.js,
 // then runs upstream's own public/script.js module graph on a minimal DOM so the
 // real world-info, macro and prompt-assembly code is what answers the app.
-import { mkdir, writeFile, rename, readFile, appendFile } from 'node:fs/promises';
+import { mkdir, writeFile, rename, readFile, appendFile, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -173,12 +173,35 @@ async function startUpstream(root, dataDir, port) {
     const nodeDataRoot = path.join(dataDir, 'sillytavern');
     await mkdir(nodeDataRoot, { recursive: true, mode: 0o700 });
 
-    // Upstream reads these before its own argument parser runs. It also chdirs
-    // to its own directory, so the core root is captured before that happens.
+    // Upstream resolves several paths against its working directory: backups,
+    // the default avatar and the global extension folders. On a desktop those
+    // sit in the repository; in an iOS app the bundle is read-only, so the
+    // working directory has to be a writable copy under the app's data root.
+    // Static files are still served from the bundle (serverDirectory is
+    // absolute), so only the writable paths are mirrored here.
+    const workRoot = path.join(nodeDataRoot, 'work');
+    for (const relative of ['backups', 'cache', 'public/img', 'public/sounds', 'public/scripts/extensions/third-party']) {
+        await mkdir(path.join(workRoot, relative), { recursive: true });
+    }
+    for (const [source, target] of [
+        [path.join(root, 'public/img/ai4.png'), path.join(workRoot, 'public/img/ai4.png')],
+        [path.join(root, 'config.yaml'), path.join(workRoot, 'config.yaml')],
+    ]) {
+        try {
+            await copyFile(source, target);
+        } catch {
+            // The server creates a default config if it is missing; a missing
+            // default avatar only affects newly created character cards.
+        }
+    }
+
+    // Upstream reads these before its own argument parser runs. It also changes
+    // into its working directory, so the core root is captured beforehand.
     globalThis.DATA_ROOT = nodeDataRoot;
     globalThis.NT_CORE_ROOT = root;
     process.env.SILLYTAVERN_DATAROOT = nodeDataRoot;
-    process.chdir(root);
+    process.chdir(workRoot);
+    console.log(`[upstream] working directory: ${workRoot}`);
 
     process.argv = [
         process.execPath, path.join(root, 'server.js'),
