@@ -206,7 +206,7 @@ struct CharacterDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: ChatTarget.self) { target in
             if let client = app.client {
-                ChatView(app: app, client: client, target: target, characterAvatar: character.avatar)
+                ChatView(app: app, client: client, target: target, characterAvatar: character.avatar, reloadToken: 0)
             } else {
                 ContentUnavailableView("引擎未就绪", systemImage: "cpu")
             }

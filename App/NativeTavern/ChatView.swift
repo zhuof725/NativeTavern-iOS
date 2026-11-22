@@ -1,110 +1,78 @@
 import SwiftUI
 import UIKit
 
+/// A conversation, drawn in the reference's reading layout.
+///
+/// The header is the conversation itself: back on the left, the title centred
+/// with the model underneath, actions on the right. Messages are prose on the
+/// surface — no bubble for the character — and the composer floats at the bottom
+/// with the context usage line inside it.
 struct ChatView: View {
     @ObservedObject var app: AppModel
     let client: LocalEngineClient
     let target: ChatTarget
     let characterAvatar: String
+    let reloadToken: Int
 
+    @ObservedObject private var reading = ReadingPreferences.shared
     @StateObject private var store: ChatStore
+
+    @Environment(\.dismiss) private var dismiss
     @State private var editing: ChatMessage?
     @State private var editText = ""
     @State private var pendingDelete: ChatMessage?
     @State private var showingPrompt = false
     @State private var renaming = false
     @State private var newName = ""
+    @State private var historyOpen = false
+    @State private var chats: [ChatSummary] = []
+    @State private var tokens = 0
+    @State private var tokenLimit = 8192
+    @State private var messageIndex = 1
+    @State private var showingSettings = false
 
-    init(app: AppModel, client: LocalEngineClient, target: ChatTarget, characterAvatar: String) {
+    init(app: AppModel, client: LocalEngineClient, target: ChatTarget, characterAvatar: String, reloadToken: Int) {
         self.app = app
         self.client = client
         self.target = target
         self.characterAvatar = characterAvatar
+        self.reloadToken = reloadToken
         _store = StateObject(wrappedValue: ChatStore(client: client, avatar: target.avatar))
     }
 
+    private var character: CharacterSummary? { app.character(avatar: target.avatar) }
+
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
+            background
             transcript
-            if let error = store.errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.red.opacity(0.08))
-            }
-            composer
-        }
-        .navigationTitle(store.characterName.isEmpty ? target.title : store.characterName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        Task { await store.startNew() }
-                    } label: {
-                        Label("新对话", systemImage: "plus.bubble")
-                    }
-                    Button {
-                        newName = store.fileName.replacingOccurrences(of: ".jsonl", with: "")
-                        renaming = true
-                    } label: {
-                        Label("重命名对话", systemImage: "pencil")
-                    }
-                    Button {
-                        Task { await store.continueLast() }
-                    } label: {
-                        Label("继续生成", systemImage: "text.append")
-                    }
-                    .disabled(store.busy || store.messages.isEmpty)
-                    Button {
-                        Task { await store.regenerateLast() }
-                    } label: {
-                        Label("重新生成", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(store.busy)
-                    Button {
-                        showingPrompt = true
-                    } label: {
-                        Label("查看最终提示词", systemImage: "text.alignleft")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+            VStack(spacing: 0) {
+                if let error = store.errorMessage {
+                    errorBanner(error)
                 }
+                composer
             }
+            .frame(maxWidth: reading.maxLineWidth)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
         }
-        .sheet(item: $editing) { message in
-            NavigationStack {
-                TextEditor(text: $editText)
-                    .font(.body)
-                    .padding(8)
-                    .navigationTitle("编辑消息")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("取消") { editing = nil }
-                        }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("保存") {
-                                let id = message.id
-                                editing = nil
-                                Task { await store.edit(messageId: id, text: editText) }
-                            }
-                        }
-                    }
-            }
-        }
+        .navigationBarBackButtonHidden(true)
+        .toolbar { toolbarContent }
+        .tint(reading.accent.color)
+        .sheet(item: $editing) { message in editor(for: message) }
         .sheet(isPresented: $showingPrompt) {
             NavigationStack {
-                PromptPreviewView(client: client, character: app.character(avatar: target.avatar))
+                PromptPreviewView(client: client, character: character)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("完成") { showingPrompt = false }
                         }
                     }
             }
+        }
+        .sheet(isPresented: $historyOpen, onDismiss: { Task { await loadChats() } }) { historySheet }
+        .sheet(isPresented: $showingSettings) {
+            NavigationStack { SettingsHomeView(app: app) }
         }
         .alert("删除这条消息？", isPresented: Binding(
             get: { pendingDelete != nil },
@@ -125,10 +93,14 @@ struct ChatView: View {
                 let name = newName
                 let file = store.fileName
                 guard !file.isEmpty else { return }
-                Task { await app.renameChat(avatar: target.avatar, fileName: file, newName: name) }
+                Task {
+                    await app.renameChat(avatar: target.avatar, fileName: file, newName: name)
+                    await loadChats()
+                }
             }
         }
         .task {
+            await reading.load(from: client)
             if store.messages.isEmpty && store.fileName.isEmpty {
                 if let fileName = target.fileName {
                     await store.open(fileName: fileName)
@@ -136,19 +108,44 @@ struct ChatView: View {
                     await store.startNew()
                 }
             }
+            await loadChats()
+            await refreshTokens()
+        }
+        .onChange(of: store.messages.count) { _, _ in
+            Task { await refreshTokens() }
         }
     }
+
+    // MARK: Background
+
+    @ViewBuilder
+    private var background: some View {
+        if reading.background.isEmpty {
+            Color(red: 0.04, green: 0.04, blue: 0.05).ignoresSafeArea()
+        } else {
+            EngineImage(client: client, path: "backgrounds/\(reading.background)")
+                .ignoresSafeArea()
+                .overlay(Color.black.opacity(0.55).ignoresSafeArea())
+        }
+    }
+
+    // MARK: Transcript
 
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    Color.clear.frame(height: 8)
                     ForEach(store.messages) { message in
-                        MessageRow(
-                            client: client,
+                        ChatMessageView(
                             message: message,
-                            characterAvatar: characterAvatar,
-                            characterName: store.characterName,
+                            characterName: store.characterName.isEmpty ? target.title : store.characterName,
+                            avatarPath: "characters/\(characterAvatar)",
+                            client: client,
+                            style: reading.style,
+                            bodySize: reading.bodySize,
+                            showsInfo: reading.messageInfo == "always",
+                            isLast: message.id == store.messages.last?.id,
                             canSwipe: !store.busy,
                             onSwipe: { direction in
                                 Task { await store.swipe(messageId: message.id, direction: direction) }
@@ -185,173 +182,331 @@ struct ChatView: View {
                     if store.busy {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("正在生成… \(store.elapsed)s").font(.caption).foregroundStyle(.secondary)
+                            Text(store.elapsed > 0 ? "正在生成… \(store.elapsed)s" : "正在生成…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
                         }
                         .id("typing")
                     }
                     if store.messages.isEmpty && !store.busy {
-                        Text("还没有消息。发一条，原版核心会用它自己的角色卡、世界书和提示词顺序生成回复。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 40)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(character?.name ?? target.title)
+                                .font(.title3.weight(.semibold))
+                            Text(ContentFormatter.plain(character?.description ?? ""))
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(8)
+                        }
+                        .padding(.top, 8)
                     }
                 }
-                .padding(16)
+                .frame(maxWidth: reading.maxLineWidth, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 150)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: store.messages.count) { _, _ in
-                if let last = store.messages.last {
-                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
+                guard let last = store.messages.last else { return }
+                withAnimation(reading.animation) { proxy.scrollTo(last.id, anchor: .bottom) }
             }
             .onChange(of: store.busy) { _, busy in
-                if busy {
-                    withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
-                }
+                if busy { withAnimation { proxy.scrollTo("typing", anchor: .bottom) } }
             }
         }
+    }
+
+    // MARK: Composer
+
+    private var contextLine: String {
+        let used = min(100, Int(Double(tokens) / Double(max(tokenLimit, 1)) * 100))
+        let formattedTokens = tokens >= 1000 ? String(format: "%.1fk", Double(tokens) / 1000) : "\(tokens)"
+        let formattedLimit = tokenLimit >= 1000 ? "\(tokenLimit / 1000)k" : "\(tokenLimit)"
+        return "上下文已用 \(used)% · \(formattedTokens) / \(formattedLimit)"
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField("输入消息…", text: $store.draft, axis: .vertical)
-                .lineLimit(1...6)
-                .textFieldStyle(.roundedBorder)
-                .disabled(store.busy)
-            if store.busy {
-                Button {
-                    Task { await store.stop() }
-                } label: {
-                    Image(systemName: "stop.circle.fill").font(.title2)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(contextLine)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+
+            HStack(alignment: .bottom, spacing: 10) {
+                CircleButton(symbol: "plus", accent: reading.accent.color) {
+                    showingPrompt = true
                 }
-                .accessibilityLabel("停止生成")
-            } else {
-                Button {
-                    Task { await store.send() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                CircleButton(symbol: "slash", accent: reading.accent.color, isText: true) {
+                    store.draft += "/"
                 }
-                .disabled(!store.canSend)
-                .accessibilityLabel("发送")
+
+                TextField("发消息…", text: $store.draft, axis: .vertical)
+                    .lineLimit(1...6)
+                    .textFieldStyle(.plain)
+                    .font(reading.bodyFont)
+                    .padding(.vertical, 8)
+                    .disabled(store.busy)
+
+                if store.busy {
+                    Button {
+                        Task { await store.stop() }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(width: 38, height: 38)
+                            .background(Color.white, in: Circle())
+                            .foregroundStyle(.black)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        Task { await store.send() }
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 16, weight: .bold))
+                            .frame(width: 38, height: 38)
+                            .background(store.canSend ? reading.accent.color : Color.secondary.opacity(0.28), in: Circle())
+                            .foregroundStyle(store.canSend ? Color.white : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!store.canSend)
+                }
             }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(reading.blur ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(white: 0.11)))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+                }
+        }
+    }
+
+    private func errorBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            Text(text).font(.caption).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button {
+                store.errorMessage = nil
+            } label: {
+                Image(systemName: "xmark").font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.bar)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.bottom, 6)
     }
-}
 
-private struct MessageRow: View {
-    let client: LocalEngineClient
-    let message: ChatMessage
-    let characterAvatar: String
-    let characterName: String
-    let canSwipe: Bool
-    let onSwipe: (String) -> Void
+    // MARK: Toolbar
 
-    var body: some View {
-        VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
-            MessageBubble(
-                message: message,
-                characterName: characterName,
-                avatar: client,
-                characterAvatar: characterAvatar
-            )
-            if message.swipes.count > 1 {
-                HStack(spacing: 8) {
-                    Button { onSwipe("left") } label: { Image(systemName: "chevron.left") }
-                        .disabled(!canSwipe)
-                    Text("\(min(message.swipeId + 1, message.swipes.count))/\(message.swipes.count)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Button { onSwipe("right") } label: { Image(systemName: "chevron.right") }
-                        .disabled(!canSwipe)
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            VStack(spacing: 1) {
+                Text(store.characterName.isEmpty ? target.title : store.characterName)
+                    .font(.headline)
+                Button {
+                    showingSettings = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(store.errorMessage == nil ? Color.green : Color.red)
+                            .frame(width: 6, height: 6)
+                        Text(app.settings?.currentModel.isEmpty == false
+                             ? (app.settings?.currentModel ?? "")
+                             : modelLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.down").font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, message.isUser ? 0 : 0)
-                .frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
+                .buttonStyle(.plain)
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button { Task { await store.startNew() } } label: {
+                    Label("新对话", systemImage: "square.and.pencil")
+                }
+                Button { historyOpen = true } label: {
+                    Label("聊天记录", systemImage: "clock.arrow.circlepath")
+                }
+                Button {
+                    newName = store.fileName.replacingOccurrences(of: ".jsonl", with: "")
+                    renaming = true
+                } label: {
+                    Label("重命名对话", systemImage: "pencil")
+                }
+                Divider()
+                Button { Task { await store.continueLast() } } label: {
+                    Label("继续生成", systemImage: "text.append")
+                }
+                .disabled(store.busy || store.messages.isEmpty)
+                Button { Task { await store.regenerateLast() } } label: {
+                    Label("重新生成", systemImage: "arrow.clockwise")
+                }
+                .disabled(store.busy || store.messages.isEmpty)
+                Divider()
+                Button { showingPrompt = true } label: {
+                    Label("查看最终提示词", systemImage: "text.alignleft")
+                }
+                Button { showingSettings = true } label: {
+                    Label("设置", systemImage: "gearshape")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
             }
         }
     }
-}
 
-/// Shows the exact messages the core would send, plus the world info it injected.
-struct PromptPreviewView: View {
-    let client: LocalEngineClient
-    let character: CharacterSummary?
+    private var modelLabel: String {
+        guard let source = app.settings?.source else { return "未连接" }
+        let names: [String: String] = [
+            "openai": "OpenAI", "custom": "自定义", "claude": "Claude",
+            "openrouter": "OpenRouter", "deepseek": "DeepSeek", "groq": "Groq",
+        ]
+        return names[source] ?? source
+    }
 
-    @State private var prompt: BuiltPrompt?
-    @State private var loading = false
-    @State private var error: String?
+    // MARK: Data
 
-    var body: some View {
-        List {
-            if let error {
-                Section {
-                    Text(error).foregroundStyle(.red).font(.footnote)
-                }
-            }
-            if let prompt {
-                let injected = prompt.worldInfo.before + prompt.worldInfo.after
-                Section("世界书注入") {
-                    if injected.isEmpty {
-                        Text("本次没有条目被激活。").foregroundStyle(.secondary)
-                    } else {
-                        Text(injected).font(.footnote.monospaced())
-                    }
-                }
-                Section("最终提示词（\(prompt.prompt.count) 条）") {
-                    ForEach(Array(prompt.prompt.enumerated()), id: \.offset) { _, message in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(message.role.uppercased())
-                                .font(.caption2.weight(.semibold))
+    private func refreshTokens() async {
+        if let reply = try? await client.call("chat.tokens", as: TokenReply.self) {
+            tokens = reply.tokens
+        }
+        tokenLimit = app.settings?.maxContext ?? 8192
+    }
+
+    private func loadChats() async {
+        chats = await app.chats(for: target.avatar)
+    }
+
+    private var historySheet: some View {
+        NavigationStack {
+            List {
+                ForEach(chats) { chat in
+                    Button {
+                        historyOpen = false
+                        Task { await store.open(fileName: chat.fileName) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(chat.displayName).font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary).lineLimit(1)
+                                Spacer()
+                                if chat.fileName == store.fileName {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(reading.accent.color)
+                                }
+                            }
+                            Text((chat.lastMessage.isEmpty ? chat.preview : chat.lastMessage)
+                                .replacingOccurrences(of: "\n", with: " "))
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text(message.content).font(.footnote.monospaced())
+                                .lineLimit(2)
+                            Text("\(chat.messageCount) 条")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
                         .padding(.vertical, 2)
                     }
+                    .buttonStyle(.plain)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            Task {
+                                await app.deleteChat(avatar: target.avatar, fileName: chat.fileName)
+                                await loadChats()
+                            }
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
                 }
-            } else if loading {
-                HStack { ProgressView(); Text("正在组装…") }
-            } else {
-                Text("点右上角刷新，核心会重新组装一次。")
-                    .foregroundStyle(.secondary)
             }
-        }
-        .navigationTitle("最终提示词")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await load() }
-                } label: {
-                    if loading { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+            .overlay {
+                if chats.isEmpty { ContentUnavailableView("还没有聊天记录", systemImage: "bubble.left") }
+            }
+            .navigationTitle("聊天记录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { historyOpen = false }
                 }
-                .disabled(loading)
             }
+            .task { await loadChats() }
         }
-        .task { await load() }
     }
 
-    private func load() async {
-        loading = true
-        error = nil
-        var args: [String: JSONValue] = ["maxContext": .number(8192)]
-        if let character {
-            args["character"] = .object([
-                "name": .string(character.name),
-                "description": .string(character.description),
-                "personality": .string(character.personality),
-                "scenario": .string(character.scenario),
-            ])
+    private func editor(for message: ChatMessage) -> some View {
+        NavigationStack {
+            TextEditor(text: $editText)
+                .font(reading.bodyFont)
+                .padding(8)
+                .navigationTitle("编辑消息")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { editing = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") {
+                            let id = message.id
+                            let text = editText
+                            editing = nil
+                            Task { await store.edit(messageId: id, text: text) }
+                        }
+                    }
+                }
         }
-        do {
-            prompt = try await client.call("prompt.build", args: args, as: BuiltPrompt.self)
-        } catch {
-            self.error = error.localizedDescription
+    }
+}
+
+private struct TokenReply: Decodable {
+    let tokens: Int
+    let messages: Int
+}
+
+private struct CircleButton: View {
+    let symbol: String
+    var accent: Color = .accentColor
+    var isText = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if isText {
+                    Text("/").font(.system(size: 17, weight: .medium))
+                } else {
+                    Image(systemName: symbol).font(.system(size: 16, weight: .semibold))
+                }
+            }
+            .frame(width: 38, height: 38)
+            .background(Color.secondary.opacity(0.14), in: Circle())
+            .foregroundStyle(.secondary)
         }
-        loading = false
+        .buttonStyle(.plain)
     }
 }

@@ -669,6 +669,25 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
     });
 
     /** Continue, impersonate and regenerate, all through Generate(). */
+    /** Token count of the open chat, for the composer's context line. */
+    define('chat.tokens', async () => {
+        const { modules } = await coreBundle();
+        const context = globalThis.SillyTavern.getContext();
+        const chat = Array.isArray(context.chat) ? context.chat : [];
+        let tokens = 0;
+        try {
+            // Upstream's own counter, so the number matches what generation sees.
+            for (const message of chat) {
+                tokens += await modules.tokenizers.getTokenCountAsync(String(message.mes ?? ''));
+            }
+        } catch (error) {
+            log(`chat.tokens failed: ${error?.message ?? error}`);
+            // A character-count estimate is better than an empty indicator.
+            tokens = chat.reduce((sum, message) => sum + String(message.mes ?? '').length, 0) / 3.5;
+        }
+        return { tokens: Math.round(tokens), messages: chat.length };
+    });
+
     define('chat.generate', async (args) => {
         const { core: api, modules } = await coreBundle();
         const type = ['continue', 'impersonate', 'regenerate'].includes(args.type) ? String(args.type) : 'normal';
@@ -1526,10 +1545,21 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
 
     define('appearance.get', async () => {
         const live = globalThis.SillyTavern?.getContext?.().powerUserSettings ?? {};
+        const settings = await readSettingsFile();
+        const look = settings.nt_appearance && typeof settings.nt_appearance === 'object' ? settings.nt_appearance : {};
         return {
+            // Tavern values the appearance screen mirrors.
             fontScale: Number(live.font_scale ?? 1),
             blur: !live.fast_ui_mode && !live.no_blur,
             reducedMotion: Boolean(live.reduced_motion),
+            background: String(live.background ?? ''),
+            // Reading preferences are the app's own; they are stored alongside
+            // the tavern settings so a backup carries them too.
+            style: String(look.style ?? 'reading'),
+            accent: String(look.accent ?? 'blue'),
+            bodySize: Number(look.bodySize ?? 16),
+            lineWidth: Number(look.lineWidth ?? 720),
+            messageInfo: String(look.messageInfo ?? 'hover'),
         };
     });
 
@@ -1544,9 +1574,24 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         if (typeof args.reducedMotion === 'boolean') patch.reduced_motion = Boolean(args.reducedMotion);
         Object.assign(settings, patch);
         if (live) Object.assign(live, patch);
+
+        // Reading preferences live under their own key.
+        const look = {};
+        if (typeof args.style === 'string' && args.style) look.style = args.style;
+        if (typeof args.accent === 'string' && args.accent) look.accent = args.accent;
+        if (Number.isFinite(args.bodySize)) look.bodySize = Number(args.bodySize);
+        if (Number.isFinite(args.lineWidth)) look.lineWidth = Number(args.lineWidth);
+        if (typeof args.messageInfo === 'string' && args.messageInfo) look.messageInfo = args.messageInfo;
+
+        if (Object.keys(look).length) {
+            settings.nt_appearance = { ...(settings.nt_appearance ?? {}), ...look };
+        }
+        // The core's own save writes its in-memory settings object, which does
+        // not carry the app's reading preferences; saving here first would let
+        // that overwrite them. The file is written last instead, and the live
+        // objects are already updated above.
         await postJson('/api/settings/save', settings);
-        try { await api.saveSettings(); } catch { /* already written */ }
-        return { saved: true, patched: Object.keys(patch) };
+        return { saved: true, patched: [...Object.keys(patch), ...Object.keys(look)] };
     });
 
     define('general.get', async () => {

@@ -136,10 +136,15 @@ struct GroupChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(messages) { message in
-                        GroupMessageRow(
-                            client: app.client,
+                        ChatMessageView(
                             message: message,
-                            avatar: avatarFor(message),
+                            characterName: storeCharacterName(message),
+                            avatarPath: "characters/\(avatarFor(message))",
+                            client: app.client,
+                            style: ReadingPreferences.shared.style,
+                            bodySize: ReadingPreferences.shared.bodySize,
+                            showsInfo: false,
+                            isLast: message.id == messages.last?.id,
                             canSwipe: !busy,
                             onSwipe: { direction in
                                 Task { await swipe(message, direction: direction) }
@@ -490,54 +495,14 @@ struct GroupChatView: View {
         ticker = nil
     }
 
+    private func storeCharacterName(_ message: ChatMessage) -> String {
+        message.name.isEmpty ? (group.name) : message.name
+    }
+
     /// A group message is attributed by name; the avatar follows it.
     private func avatarFor(_ message: ChatMessage) -> String {
         if message.isUser { return "" }
         let match = app.characters.first { $0.name == message.name }
         return match?.avatar ?? members.first ?? ""
-    }
-}
-
-private struct GroupMessageRow: View {
-    let client: LocalEngineClient?
-    let message: ChatMessage
-    let avatar: String
-    let canSwipe: Bool
-    let onSwipe: (String) -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if message.isUser { Spacer(minLength: 40) }
-            if !message.isUser && !avatar.isEmpty {
-                EngineImage(client: client, path: "characters/\(avatar)")
-                    .frame(width: 30, height: 30)
-                    .clipShape(Circle())
-            }
-            VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
-                Text(message.isUser ? "你" : (message.name.isEmpty ? "角色" : message.name))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(message.text)
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .background(
-                        message.isUser ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
-                if message.swipes.count > 1 {
-                    HStack(spacing: 8) {
-                        Button { onSwipe("left") } label: { Image(systemName: "chevron.left") }
-                            .disabled(!canSwipe)
-                        Text("\(min(message.swipeId + 1, message.swipes.count))/\(message.swipes.count)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Button { onSwipe("right") } label: { Image(systemName: "chevron.right") }
-                            .disabled(!canSwipe)
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            if !message.isUser { Spacer(minLength: 40) }
-        }
     }
 }

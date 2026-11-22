@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
                     phase = .starting("正在读取角色与世界书…")
                     await loadAll()
                     if case .failed = phase { return }
+                    await ReadingPreferences.shared.load(from: client)
                     phase = .ready
                     return
                 }

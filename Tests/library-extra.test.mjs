@@ -158,6 +158,18 @@ try {
     assert.equal(importedDetail.preset.temperature, 0.75);
     console.log('ok preset import');
 
+    const tokenInfo = await call('chat.tokens');
+    assert.ok(tokenInfo.tokens > 0, 'token count is reported for the open chat');
+    console.log('ok chat tokens', tokenInfo.tokens);
+
+    // Appearance round trip: reading preferences persist with the tavern settings.
+    await call('appearance.save', { style: 'hush', accent: 'teal', bodySize: 18, lineWidth: 640, messageInfo: 'always' });
+    const styled = await call('appearance.get');
+    assert.equal(styled.style, 'hush');
+    assert.equal(styled.accent, 'teal');
+    assert.equal(styled.bodySize, 18);
+    console.log('ok appearance');
+
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');
 } catch (error) {
