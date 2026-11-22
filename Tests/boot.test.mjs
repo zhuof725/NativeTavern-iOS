@@ -34,6 +34,11 @@ test('boot serves the upstream core through the launch-token transport', { timeo
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.stderr.on('data', (chunk) => { output += chunk; });
+    child.on('exit', (code, signal) => {
+        if (code !== null && code !== 0) {
+            console.log(`[engine exited: code ${code} signal ${signal}]\n${output.split('\n').slice(-20).join('\n')}`);
+        }
+    });
     const exited = once(child, 'exit');
 
     t.after(async () => {
@@ -53,6 +58,10 @@ test('boot serves the upstream core through the launch-token transport', { timeo
             headers: { authorization: `Bearer ${endpoint.token}`, 'content-type': 'application/json' },
             body: JSON.stringify({ id: randomUUID(), method, args }),
         });
+        if (response.status !== 200 && response.status !== 501 && response.status !== 400) {
+            const tail = output.split('\n').slice(-12).join('\n');
+            throw new Error(`${method}: HTTP ${response.status}\n--- engine output ---\n${tail}`);
+        }
         const body = await response.json();
         if (body.error) {
             // The engine's stdout is the only place its failures are explained;
