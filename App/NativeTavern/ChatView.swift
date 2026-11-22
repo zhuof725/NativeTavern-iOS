@@ -184,7 +184,7 @@ struct ChatView: View {
                     if store.busy {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("正在生成…").font(.caption).foregroundStyle(.secondary)
+                            Text("正在生成… \(store.elapsed)s").font(.caption).foregroundStyle(.secondary)
                         }
                         .id("typing")
                     }

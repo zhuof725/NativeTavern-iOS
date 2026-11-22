@@ -10,11 +10,13 @@ final class ChatStore: ObservableObject {
     @Published private(set) var characterName: String = ""
     @Published private(set) var userName: String = "User"
     @Published private(set) var busy = false
+    @Published private(set) var elapsed = 0
     @Published var draft: String = ""
     @Published var errorMessage: String?
 
     let avatar: String
     private let client: LocalEngineClient
+    private var ticker: Task<Void, Never>?
 
     init(client: LocalEngineClient, avatar: String) {
         self.client = client
@@ -26,7 +28,7 @@ final class ChatStore: ObservableObject {
     }
 
     func open(fileName: String?) async {
-        busy = true
+        beginWork()
         errorMessage = nil
         do {
             let snapshot = try await client.call(
@@ -41,11 +43,11 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func startNew() async {
-        busy = true
+        beginWork()
         errorMessage = nil
         do {
             let snapshot = try await client.call(
@@ -57,7 +59,7 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func send() async {
@@ -77,7 +79,7 @@ final class ChatStore: ObservableObject {
             swipeId: 0,
             sendDate: ""
         ))
-        busy = true
+        beginWork()
         do {
             let reply = try await client.call(
                 "chat.send",
@@ -93,12 +95,12 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func continueLast() async {
         guard !busy, !messages.isEmpty else { return }
-        busy = true
+        beginWork()
         errorMessage = nil
         do {
             let reply = try await client.call(
@@ -113,7 +115,7 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func regenerateLast() async {
@@ -123,7 +125,7 @@ final class ChatStore: ObservableObject {
 
     func swipe(messageId: Int, direction: String) async {
         guard !busy else { return }
-        busy = true
+        beginWork()
         errorMessage = nil
         do {
             let reply = try await client.call(
@@ -138,11 +140,11 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func edit(messageId: Int, text: String) async {
-        busy = true
+        beginWork()
         errorMessage = nil
         do {
             let snapshot = try await client.call(
@@ -154,11 +156,11 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func delete(messageId: Int) async {
-        busy = true
+        beginWork()
         errorMessage = nil
         do {
             let snapshot = try await client.call(
@@ -170,7 +172,7 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        endWork()
     }
 
     func stop() async {
@@ -180,6 +182,26 @@ final class ChatStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+        endWork()
+    }
+
+    /// Drives the elapsed counter shown while a reply is pending.
+    private func beginWork() {
+        busy = true
+        elapsed = 0
+        ticker?.cancel()
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { break }
+                self?.elapsed += 1
+            }
+        }
+    }
+
+    private func endWork() {
+        ticker?.cancel()
+        ticker = nil
         busy = false
     }
 

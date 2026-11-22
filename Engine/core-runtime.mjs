@@ -174,6 +174,24 @@ async function completeInit(core, modules, log) {
     } catch (error) {
         log(`prompt manager unavailable: ${error.message}`);
     }
+
+    // The native client only speaks chat completions, but upstream's default
+    // settings use the Horde. Leaving it on Horde makes the first generation
+    // wait on an external service that the app never exposes. Selecting the
+    // chat-completion API here is the same state change the settings UI makes.
+    try {
+        const context = globalThis.SillyTavern.getContext();
+        if (context.mainApi !== 'openai') {
+            // The select's change handler is not bound yet at this point in the
+            // page's startup, so the core's own switch function is called
+            // directly; it assigns main_api and refreshes its dependent state.
+            core.changeMainAPI('openai');
+            globalThis.$('#main_api').val('openai');
+            log(`main API set to openai (was ${context.mainApi ?? 'undefined'})`);
+        }
+    } catch (error) {
+        log(`main API switch failed: ${error.message}`);
+    }
 }
 
 /**

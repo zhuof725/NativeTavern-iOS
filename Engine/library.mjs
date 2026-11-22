@@ -115,6 +115,67 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         }
     };
 
+    /**
+     * Runs one generation and always resolves within a bounded time.
+     *
+     * A provider that never answers would otherwise leave the Swift client's
+     * request open indefinitely. On timeout the core's own stop path is invoked
+     * and the caller gets an explanation it can show.
+     */
+    const GENERATION_TIMEOUT_MS = 180000;
+
+    const generationPreflight = (modules) => {
+        const context = globalThis.SillyTavern.getContext();
+        const settings = modules.openai.oai_settings ?? {};
+        if (context.mainApi !== 'openai') {
+            return '还没有启用对话补全。请到“设置 → 模型连接”选择服务并保存，再发送消息。';
+        }
+        if (settings.chat_completion_source === 'custom' && !String(settings.custom_url ?? '').trim()) {
+            return '还没有填写模型接口地址。请到“设置 → 模型连接”填写地址（通常以 /v1 结尾）并保存。';
+        }
+        return null;
+    };
+
+    const runGeneration = async (api, modules, type) => {
+        const blocked = generationPreflight(modules);
+        if (blocked) return { ...snapshot(), error: blocked };
+
+        const context = globalThis.SillyTavern.getContext();
+        const settings = modules.openai.oai_settings ?? {};
+        const started = Date.now();
+        log(`generate ${type}: source=${settings.chat_completion_source} model=${settings.custom_model || settings.openai_model || ''} messages=${context.chat.length} stream=${!!settings.stream_openai}`);
+        api.setOnlineStatus('connected');
+
+        let failure = null;
+        const generation = api.Generate(type, {}, false)
+            .then(() => 'done')
+            .catch((error) => {
+                failure = error;
+                return 'error';
+            });
+        let timer = null;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), GENERATION_TIMEOUT_MS);
+        });
+        const outcome = await Promise.race([generation, timeout]);
+        clearTimeout(timer);
+
+        if (outcome === 'timeout') {
+            log(`generate ${type}: timed out after ${GENERATION_TIMEOUT_MS}ms; stopping`);
+            try { api.stopGeneration(); } catch { /* already stopped */ }
+            await api.saveChatConditional().catch(() => {});
+            return { ...snapshot(), error: '生成超过 3 分钟，已自动停止。请检查模型地址、密钥或网络后重试。' };
+        }
+        if (outcome === 'error') {
+            log(`generate ${type}: failed after ${Date.now() - started}ms: ${failure?.stack ?? failure}`);
+            await api.saveChatConditional().catch(() => {});
+            return { ...snapshot(), error: String(failure?.message ?? failure) };
+        }
+        await api.saveChatConditional();
+        log(`generate ${type}: done in ${Date.now() - started}ms`);
+        return { ...snapshot(), error: null };
+    };
+
     // ---- characters --------------------------------------------------------
 
     const CHARACTER_FIELDS = [
@@ -520,8 +581,11 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
     // ---- generation --------------------------------------------------------
 
     define('chat.send', async (args) => {
-        const { core } = await coreBundle();
+        const { core: api, modules } = await coreBundle();
         const text = requireString(args, 'text');
+        const blocked = generationPreflight(modules);
+        if (blocked) return { ...snapshot(), error: blocked };
+
         const context = globalThis.SillyTavern.getContext();
         // The UI's optimistic message is not a second copy of the truth: the
         // core's chat is where the message goes, and it is what the prompt
@@ -534,36 +598,17 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
             mes: text,
             extra: {},
         });
-        await core.saveChatConditional();
-        core.setOnlineStatus('connected');
-
-        try {
-            await core.Generate('normal', {}, false);
-            await core.saveChatConditional();
-            return { ...snapshot(), error: null };
-        } catch (error) {
-            log(`generation failed: ${error?.stack ?? error}`);
-            // The user's turn is already in the chat; returning it keeps the UI
-            // and the core in agreement even when the provider refused.
-            await core.saveChatConditional().catch(() => {});
-            return { ...snapshot(), error: String(error?.message ?? error) };
-        }
+        log(`chat.send: saving user turn (${context.chat.length} messages)`);
+        await api.saveChatConditional();
+        log('chat.send: user turn saved');
+        return runGeneration(api, modules, 'normal');
     });
 
     /** Continue, impersonate and regenerate, all through Generate(). */
     define('chat.generate', async (args) => {
-        const { core: api } = await coreBundle();
+        const { core: api, modules } = await coreBundle();
         const type = ['continue', 'impersonate', 'regenerate'].includes(args.type) ? String(args.type) : 'normal';
-        api.setOnlineStatus('connected');
-        try {
-            await api.Generate(type, {}, false);
-            await api.saveChatConditional();
-            return { ...snapshot(), error: null };
-        } catch (error) {
-            log(`generation (${type}) failed: ${error?.stack ?? error}`);
-            await api.saveChatConditional().catch(() => {});
-            return { ...snapshot(), error: String(error?.message ?? error) };
-        }
+        return runGeneration(api, modules, type);
     });
 
     define('generate.stop', async () => {
@@ -757,7 +802,9 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         return {
             userName: String(settings.username ?? 'User'),
             userAvatar: String(settings.user_avatar ?? ''),
-            mainApi: String(settings.main_api ?? ''),
+            // The live value is what generation uses; the saved file can still
+            // name the Horde until the next settings write.
+            mainApi: String(globalThis.SillyTavern.getContext().mainApi ?? settings.main_api ?? ''),
             source,
             currentModel: String(openaiSettings[modelKeys[source] ?? 'custom_model'] ?? ''),
             customUrl: String(openaiSettings.custom_url ?? ''),
@@ -776,6 +823,32 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
             presetNames: Array.isArray(result.openai_setting_names) ? result.openai_setting_names.map(String) : [],
             worldNames: Array.isArray(result.world_names) ? result.world_names.map(String) : [],
         };
+    });
+
+    /** Checks that the configured provider answers a model-list request. */
+    define('settings.test', async () => {
+        const { modules } = await coreBundle();
+        const settings = modules.openai.oai_settings ?? {};
+        try {
+            const result = await postJson('/api/backends/chat-completions/status', {
+                chat_completion_source: settings.chat_completion_source,
+                custom_url: settings.custom_url,
+                custom_include_headers: settings.custom_include_headers,
+                reverse_proxy: settings.reverse_proxy,
+                proxy_password: settings.proxy_password,
+            });
+            if (result?.error) {
+                return { ok: false, message: '服务没有返回模型列表；地址或密钥可能不正确。' };
+            }
+            const models = Array.isArray(result?.data) ? result.data : [];
+            return {
+                ok: true,
+                message: models.length ? `连接成功，可用模型 ${models.length} 个。` : '服务已响应。',
+                models: models.map((model) => String(model?.id ?? model?.name ?? '')).filter(Boolean).slice(0, 20),
+            };
+        } catch (error) {
+            return { ok: false, message: `连接失败：${error?.message ?? error}` };
+        }
     });
 
     // ---- personas ----------------------------------------------------------

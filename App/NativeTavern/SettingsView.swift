@@ -10,9 +10,12 @@ struct SettingsView: View {
     @State private var reverseProxy = ""
     @State private var apiKey = ""
     @State private var userName = ""
+    @State private var stream = false
     @State private var synced = false
     @State private var saving = false
+    @State private var testing = false
     @State private var notice: String?
+    @State private var testResult: String?
 
     private struct Provider: Identifiable, Hashable {
         let id: String
@@ -65,12 +68,23 @@ struct SettingsView: View {
                             .autocorrectionDisabled()
                     }
                     SecureField("API Key", text: $apiKey)
-                    Button {
-                        Task { await saveConnection() }
-                    } label: {
-                        if saving { ProgressView() } else { Text("保存连接") }
+                    Toggle("流式传输", isOn: $stream)
+                    HStack {
+                        Button("保存连接") {
+                            Task { _ = await saveConnection() }
+                        }
+                        .disabled(saving || testing)
+                        Button("测试连接") {
+                            Task { await testConnection() }
+                        }
+                        .disabled(saving || testing)
+                        if saving || testing { ProgressView().controlSize(.small) }
                     }
-                    .disabled(saving)
+                    if let testResult {
+                        Text(testResult)
+                            .font(.caption)
+                            .foregroundStyle(testResult.hasPrefix("连接成功") ? Color.secondary : Color.red)
+                    }
                 } header: {
                     Text("模型连接")
                 } footer: {
@@ -184,13 +198,15 @@ struct SettingsView: View {
         model = settings.currentModel
         customURL = settings.customUrl
         reverseProxy = settings.reverseProxy
+        stream = settings.stream
         userName = settings.userName
         synced = true
     }
 
-    private func saveConnection() async {
+    @discardableResult
+    private func saveConnection(announce: Bool = true) async -> Bool {
         saving = true
-        notice = nil
+        if announce { notice = nil }
         var patch: [String: JSONValue] = [
             "chat_completion_source": .string(source),
         ]
@@ -203,6 +219,7 @@ struct SettingsView: View {
                 patch["reverse_proxy"] = .string(reverseProxy.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
+        patch["stream_openai"] = .bool(stream)
         let ok = await app.updateSettings(patch)
         var keySaved = true
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -211,7 +228,29 @@ struct SettingsView: View {
             if keySaved { apiKey = "" }
         }
         saving = false
-        notice = ok && keySaved ? "模型连接已保存。" : (app.errorMessage ?? "保存失败。")
+        let success = ok && keySaved
+        if announce {
+            notice = success ? "模型连接已保存。" : (app.errorMessage ?? "保存失败。")
+        }
+        return success
+    }
+
+    private func testConnection() async {
+        testResult = nil
+        let saved = await saveConnection(announce: false)
+        guard saved, let client = app.client else {
+            testResult = "连接失败：\(app.errorMessage ?? "设置没有保存。")"
+            return
+        }
+        testing = true
+        do {
+            struct Probe: Decodable { let ok: Bool; let message: String }
+            let result = try await client.call("settings.test", as: Probe.self)
+            testResult = result.message
+        } catch {
+            testResult = "连接失败：\(error.localizedDescription)"
+        }
+        testing = false
     }
 }
 
