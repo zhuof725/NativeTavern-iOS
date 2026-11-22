@@ -177,6 +177,47 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         return { ...snapshot(), error: null };
     };
 
+    /** The group counterpart of runGeneration: same timeout and logging. */
+    const runGroupGeneration = async (api, modules, type, { forceChid } = {}) => {
+        const groupId = String(globalThis.SillyTavern.getContext().groupId ?? '');
+        if (!groupId) throw new LibraryError('No group is open.', 400);
+        const blocked = generationPreflight(api, modules);
+        if (blocked) return { ...(await groupSnapshot(modules, groupId)), error: blocked };
+
+        api.setOnlineStatus('connected');
+        const started = Date.now();
+        log(`group generate ${type}: group=${groupId} members=${(modules.groupChats.groups ?? []).find((g) => String(g.id) === groupId)?.members?.length ?? 0}`);
+
+        let failure = null;
+        const generation = api.Generate(type, forceChid === undefined ? {} : { force_chid: forceChid }, false)
+            .then(() => 'done')
+            .catch((error) => {
+                failure = error;
+                return 'error';
+            });
+        let timer = null;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), GENERATION_TIMEOUT_MS);
+        });
+        const outcome = await Promise.race([generation, timeout]);
+        clearTimeout(timer);
+
+        if (outcome === 'timeout') {
+            log(`group generate ${type}: timed out; stopping`);
+            try { api.stopGeneration(); } catch { /* already stopped */ }
+            await api.saveChatConditional().catch(() => {});
+            return { ...(await groupSnapshot(modules, groupId)), error: '生成超过 3 分钟，已自动停止。' };
+        }
+        if (outcome === 'error') {
+            log(`group generate ${type}: failed: ${failure?.stack ?? failure}`);
+            await api.saveChatConditional().catch(() => {});
+            return { ...(await groupSnapshot(modules, groupId)), error: String(failure?.message ?? failure) };
+        }
+        await api.saveChatConditional();
+        log(`group generate ${type}: done in ${Date.now() - started}ms`);
+        return { ...(await groupSnapshot(modules, groupId)), error: null };
+    };
+
     // ---- characters --------------------------------------------------------
 
     const CHARACTER_FIELDS = [
@@ -581,6 +622,18 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
 
     // ---- generation --------------------------------------------------------
 
+    /** The open group's messages, named the same way in both directions. */
+    const groupSnapshot = async (modules, id) => {
+        const context = globalThis.SillyTavern.getContext();
+        const group = (modules.groupChats.groups ?? []).find((item) => String(item.id) === id);
+        return {
+            ...snapshot(),
+            groupId: String(context.groupId ?? ''),
+            groupName: String(group?.name ?? ''),
+            chatId: String(group?.chat_id ?? ''),
+        };
+    };
+
     define('chat.send', async (args) => {
         const { core: api, modules } = await coreBundle();
         const text = requireString(args, 'text');
@@ -618,7 +671,286 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         return { stopped: true };
     });
 
+    // ---- group chats -------------------------------------------------------
+
+    /** A group is a member list plus generation settings, stored by upstream. */
+    const toGroup = (group) => ({
+        id: String(group?.id ?? ''),
+        name: String(group?.name ?? ''),
+        members: Array.isArray(group?.members) ? group.members.map(String) : [],
+        disabledMembers: Array.isArray(group?.disabled_members) ? group.disabled_members.map(String) : [],
+        avatar: String(group?.avatar_url ?? ''),
+        chatId: String(group?.chat_id ?? ''),
+        chats: Array.isArray(group?.chats) ? group.chats.map(String) : [],
+        activationStrategy: Number(group?.activation_strategy ?? 0),
+        generationMode: Number(group?.generation_mode ?? 0),
+        autoModeDelay: Number(group?.auto_mode_delay ?? 5),
+        allowSelfResponses: Boolean(group?.allow_self_responses),
+        fav: Boolean(group?.fav),
+        lastChat: Number(group?.date_last_chat ?? 0),
+    });
+
+    define('group.list', async () => {
+        const { modules } = await coreBundle();
+        await modules.groupChats.getGroups();
+        const groups = modules.groupChats.groups ?? [];
+        return { groups: groups.map(toGroup) };
+    });
+
+    define('group.create', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const name = requireString(args, 'name');
+        const members = Array.isArray(args.members) ? args.members.map(String) : [];
+        if (!members.length) throw new LibraryError('A group needs at least one member.');
+        const created = await postJson('/api/groups/create', {
+            name,
+            members,
+            activation_strategy: Number(args.activationStrategy ?? 0),
+            generation_mode: Number(args.generationMode ?? 0),
+            allow_self_responses: Boolean(args.allowSelfResponses),
+        });
+        await api.getCharacters();
+        await modules.groupChats.getGroups();
+        return { group: toGroup(created) };
+    });
+
+    define('group.edit', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        await modules.groupChats.getGroups();
+        const group = (modules.groupChats.groups ?? []).find((item) => String(item.id) === id);
+        if (!group) throw new LibraryError(`No group with id ${id}`, 404);
+        const patch = args.patch && typeof args.patch === 'object' ? args.patch : {};
+        const allowed = ['name', 'members', 'disabled_members', 'activation_strategy',
+            'generation_mode', 'auto_mode_delay', 'allow_self_responses', 'fav'];
+        for (const key of allowed) {
+            if (patch[key] !== undefined) group[key] = patch[key];
+        }
+        // Upstream's own save path: the same endpoint its UI uses.
+        await modules.groupChats.editGroup(id, true, false);
+        await api.getCharacters();
+        return { group: toGroup(group) };
+    });
+
+    define('group.delete', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        await modules.groupChats.getGroups();
+        const group = (modules.groupChats.groups ?? []).find((item) => String(item.id) === id);
+        if (!group) throw new LibraryError(`No group with id ${id}`, 404);
+
+        // Opening a group and switching chats schedule a debounced save (1s).
+        // Deleting immediately lets that timer write the file back afterwards,
+        // which silently resurrects the group. The pending save is given time to
+        // land, the delete is issued, and the result is re-checked once.
+        const settle = () => new Promise((resolve) => setTimeout(resolve, 1100));
+        const present = async () => {
+            await modules.groupChats.getGroups();
+            return (modules.groupChats.groups ?? []).some((item) => String(item.id) === id);
+        };
+
+        await settle();
+        await modules.groupChats.deleteGroup(id);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (await present()) {
+            log(`group.delete: ${id} reappeared after a delayed save; deleting again`);
+            await settle();
+            await modules.groupChats.deleteGroup(id);
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        await api.getCharacters();
+        return { deleted: id, verified: !(await present()) };
+    });
+
+    /** Opens a group so generation, chat loading and saving all target it. */
+    define('group.open', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        await modules.groupChats.getGroups();
+        const opened = await modules.groupChats.openGroupById(id);
+        if (!opened) {
+            // Already open is not an error: the caller is asking for the state.
+            const context = globalThis.SillyTavern.getContext();
+            if (String(context.groupId ?? '') !== id) throw new LibraryError(`Could not open group ${id}`, 400);
+        }
+        const context = globalThis.SillyTavern.getContext();
+        return {
+            ...snapshot(),
+            groupId: String(context.groupId ?? ''),
+            groupName: String((modules.groupChats.groups ?? []).find((g) => String(g.id) === id)?.name ?? ''),
+        };
+    });
+
+    define('group.chats', async (args) => {
+        const { modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        await modules.groupChats.getGroups();
+        const group = (modules.groupChats.groups ?? []).find((item) => String(item.id) === id);
+        if (!group) throw new LibraryError(`No group with id ${id}`, 404);
+        const chats = await postJson('/api/chats/group/info', { id: group.chat_id });
+        const list = [];
+        for (const chatId of group.chats ?? []) {
+            try {
+                const info = String(chatId) === String(group.chat_id)
+                    ? chats
+                    : await postJson('/api/chats/group/info', { id: chatId });
+                list.push({
+                    id: String(chatId),
+                    messageCount: Number(info?.chat_items ?? 0),
+                    preview: String(info?.mes ?? ''),
+                    lastMessage: String(info?.last_mes ?? ''),
+                    lastUpdated: String(info?.last_date ?? ''),
+                });
+            } catch {
+                // A chat listed in the group but missing on disk is skipped.
+            }
+        }
+        return { chats: list, current: String(group.chat_id ?? '') };
+    });
+
+    define('group.chat.new', async (args) => {
+        const { modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        await modules.groupChats.getGroups();
+        await modules.groupChats.createNewGroupChat(id);
+        return { ...(await groupSnapshot(modules, id)) };
+    });
+
+    define('group.chat.open', async (args) => {
+        const { modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        const chatId = requireString(args, 'chatId');
+        await modules.groupChats.getGroups();
+        await modules.groupChats.openGroupChat(id, chatId);
+        return { ...(await groupSnapshot(modules, id)) };
+    });
+
+    define('group.chat.delete', async (args) => {
+        const { modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        const chatId = requireString(args, 'chatId');
+        await modules.groupChats.getGroups();
+        await modules.groupChats.deleteGroupChatByName(id, chatId);
+        return { deleted: chatId };
+    });
+
+    define('group.chat.rename', async (args) => {
+        const { modules } = await coreBundle();
+        const id = requireString(args, 'id');
+        const chatId = requireString(args, 'chatId');
+        const newName = requireString(args, 'newName');
+        await modules.groupChats.getGroups();
+        await modules.groupChats.renameGroupChat(id, chatId, newName);
+        return { chatId: newName };
+    });
+
+    /**
+     * Sends a turn into the open group.
+     *
+     * `Generate()` already hands off to upstream's group generator when a group
+     * is selected, so this is the same call the single-character chat makes; the
+     * only addition is the optional member that should answer first.
+     */
+    define('group.send', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const context = globalThis.SillyTavern.getContext();
+        if (!context.groupId) throw new LibraryError('No group is open.', 400);
+
+        const text = typeof args.text === 'string' ? args.text.trim() : '';
+        let forceChid;
+        if (typeof args.forceMember === 'string' && args.forceMember) {
+            await modules.groupChats.unshallowGroupMembers(String(context.groupId));
+            const index = context.characters.findIndex((character) => character?.avatar === args.forceMember);
+            if (index < 0) throw new LibraryError(`No character with avatar ${args.forceMember}`, 404);
+            forceChid = index;
+        }
+
+        if (text) {
+            context.chat.push({
+                name: String(context.name1),
+                is_user: true,
+                is_system: false,
+                send_date: String(Date.now()),
+                mes: text,
+                extra: {},
+            });
+            await api.saveChatConditional();
+        }
+
+        return runGroupGeneration(api, modules, 'normal', { forceChid });
+    });
+
+    define('group.swipe', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const id = requireIndex(args, 'id');
+        const context = globalThis.SillyTavern.getContext();
+        const message = context.chat[id];
+        if (!message) throw new LibraryError(`No message at ${id}`, 404);
+        if (!Array.isArray(message.swipes) || !message.swipes.length) {
+            message.swipe_id = 0;
+            message.swipes = [String(message.mes ?? '')];
+        }
+        const original = Number(message.swipe_id ?? 0);
+        const show = (index) => {
+            message.swipe_id = index;
+            message.mes = String(message.swipes[index] ?? '');
+        };
+        const direction = args.direction === 'left' ? 'left' : 'right';
+        if (direction === 'left') {
+            show(original > 0 ? original - 1 : Math.max(0, message.swipes.length - 1));
+            await api.saveChatConditional();
+            return groupSnapshot(modules, String(context.groupId ?? ''));
+        }
+        if (original + 1 < message.swipes.length) {
+            show(original + 1);
+            await api.saveChatConditional();
+            return groupSnapshot(modules, String(context.groupId ?? ''));
+        }
+        // A new variant is a group regeneration of the last turn.
+        if (id !== context.chat.length - 1) {
+            show(0);
+            await api.saveChatConditional();
+            return groupSnapshot(modules, String(context.groupId ?? ''));
+        }
+        message.swipe_id = message.swipes.length;
+        try {
+            await modules.groupChats.regenerateGroup();
+            await api.saveChatConditional();
+            return { ...(await groupSnapshot(modules, String(context.groupId ?? ''))), error: null };
+        } catch (error) {
+            show(Math.min(original, Math.max(0, message.swipes.length - 1)));
+            await api.saveChatConditional().catch(() => {});
+            return { ...(await groupSnapshot(modules, String(context.groupId ?? ''))), error: String(error?.message ?? error) };
+        }
+    });
+
+    define('group.message.edit', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const id = requireIndex(args, 'id');
+        const context = globalThis.SillyTavern.getContext();
+        const message = context.chat[id];
+        if (!message) throw new LibraryError(`No message at ${id}`, 404);
+        message.mes = String(args.text ?? '');
+        if (Array.isArray(message.swipes) && message.swipes.length) {
+            message.swipes[Number(message.swipe_id ?? 0)] = message.mes;
+        }
+        await api.saveChatConditional();
+        return groupSnapshot(modules, String(context.groupId ?? ''));
+    });
+
+    define('group.message.delete', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const id = requireIndex(args, 'id');
+        const context = globalThis.SillyTavern.getContext();
+        if (!context.chat[id]) throw new LibraryError(`No message at ${id}`, 404);
+        context.chat.splice(id, 1);
+        await api.saveChatConditional();
+        return groupSnapshot(modules, String(context.groupId ?? ''));
+    });
+
     // ---- world info --------------------------------------------------------
+
+
 
     define('worldinfo.summary', async () => {
         const { modules } = await coreBundle();

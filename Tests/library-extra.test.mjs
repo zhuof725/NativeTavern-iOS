@@ -3,8 +3,10 @@
 // book activation.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { startMockModel } from './support/mock-model.mjs';
 import { installResolversAndBoot } from './support/engine-harness.mjs';
 
+const model = await startMockModel();
 const harness = await installResolversAndBoot();
 const call = (method, args = {}) => harness.call(method, args);
 
@@ -56,6 +58,50 @@ try {
     assert.ok(Array.isArray(snapshot.presetNames));
     console.log('ok snapshot', snapshot.source, snapshot.currentModel);
 
+    // Group chats go through upstream's own generator, so it needs a provider.
+    await call('settings.update', {
+        patch: {
+            chat_completion_source: 'custom',
+            custom_url: model.url,
+            custom_model: 'mock-model',
+            openai_max_context: 8192,
+            openai_max_tokens: 300,
+            stream_openai: false,
+        },
+    });
+    const group = await call('group.create', { name: 'Test Group', members: [avatar] });
+    assert.ok(group.group.id);
+    const groupList = await call('group.list');
+    assert.ok(groupList.groups.some((item) => item.id === group.group.id));
+    console.log('ok group create');
+
+    const opened = await call('group.open', { id: group.group.id });
+    assert.equal(opened.groupId, group.group.id);
+
+    const sent = await call('group.send', { text: 'hello group' });
+    assert.equal(sent.error, null);
+    assert.ok(sent.messages.length >= 2);
+    console.log('ok group send', sent.messages.length, 'messages');
+
+    const edited = await call('group.message.edit', { id: sent.messages.length - 1, text: 'EDITED' });
+    assert.equal(edited.messages.at(-1).text, 'EDITED');
+    const removed = await call('group.message.delete', { id: edited.messages.length - 1 });
+    assert.equal(removed.messages.length, edited.messages.length - 1);
+    console.log('ok group message edit/delete');
+
+    const groupChats = await call('group.chats', { id: group.group.id });
+    assert.ok(groupChats.chats.length >= 1);
+    console.log('ok group chats');
+    const newChat = await call('group.chat.new', { id: group.group.id });
+    console.log('  new chat id:', JSON.stringify(newChat.chatId), 'file:', JSON.stringify(newChat.fileName));
+
+    const deleted = await call('group.delete', { id: group.group.id });
+    console.log('  delete result:', JSON.stringify(deleted));
+    const afterDelete = await call('group.list');
+    console.log('  groups now:', JSON.stringify(afterDelete.groups.map((item) => item.id)));
+    assert.ok(!afterDelete.groups.some((item) => item.id === group.group.id));
+    console.log('ok group delete');
+
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');
 } catch (error) {
@@ -63,5 +109,6 @@ try {
     console.log('FAIL', error.message);
     console.log(harness.log().split('\n').filter((line) => /\[library\]|Error|error/.test(line)).slice(-12).join('\n'));
 } finally {
+    await model.close();
     await harness.shutdown();
 }

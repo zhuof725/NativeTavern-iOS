@@ -49,6 +49,9 @@ private struct MainTabs: View {
             CharactersView(app: app)
                 .tabItem { Label("角色", systemImage: "person.2.fill") }
 
+            GroupsView(app: app)
+                .tabItem { Label("群聊", systemImage: "person.3.fill") }
+
             WorldInfoView(app: app)
                 .tabItem { Label("世界书", systemImage: "book.closed.fill") }
 

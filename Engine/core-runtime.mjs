@@ -55,6 +55,9 @@ export async function startCore({ upstream, coreRoot, log = () => {} }) {
         chats: await import(`file://${path.join(publicDir, 'scripts/chats.js')}`),
         charData: await import(`file://${path.join(publicDir, 'scripts/char-data.js')}`),
         extensions: await import(`file://${path.join(publicDir, 'scripts/extensions.js')}`),
+        personas: await import(`file://${path.join(publicDir, 'scripts/personas.js')}`),
+        groupChats: await import(`file://${path.join(publicDir, 'scripts/group-chats.js')}`),
+        tags: await import(`file://${path.join(publicDir, 'scripts/tags.js')}`),
     };
 
     const appReady = await waitForSettings(core, log);
