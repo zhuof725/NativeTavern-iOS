@@ -59,6 +59,16 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         if (response.status >= 400) throw new LibraryError(`${path} failed (${response.status}): ${text.slice(0, 200)}`, response.status);
         return text;
     };
+    const postJsonArray = async (path, body, method = 'POST') => {
+        const response = await session.request(method, path, method === 'GET' ? {} : {
+            headers: { 'content-type': 'application/json' },
+            body: Buffer.from(JSON.stringify(body ?? {})),
+        });
+        const text = response.body?.toString('utf8') ?? '';
+        let parsed = [];
+        try { parsed = JSON.parse(text); } catch { parsed = []; }
+        return Array.isArray(parsed) ? parsed : [];
+    };
     const postForm = async (path, fields, file) => {
         const boundary = `----NativeTavern${randomBytes(8).toString('hex')}`;
         const chunks = [];
@@ -948,7 +958,215 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         return groupSnapshot(modules, String(context.groupId ?? ''));
     });
 
+    // ---- presets (all kinds) -----------------------------------------------
+
+    /**
+     * Preset kinds the API exposes. Each maps to its own folder on disk and its
+     * own block in the settings payload — that is how the web UI's preset
+     * manager sees them, and the same data is used here.
+     */
+    const PRESET_KINDS = {
+        openai: { apiId: 'openai', field: 'oai', namesField: 'openai_setting_names', valuesField: 'openai_settings' },
+        instruct: { apiId: 'instruct', field: 'instruct' },
+        context: { apiId: 'context', field: 'context' },
+        sysprompt: { apiId: 'sysprompt', field: 'sysprompt' },
+        reasoning: { apiId: 'reasoning', field: 'reasoning' },
+        textgen: { apiId: 'textgenerationwebui', field: 'textgen', namesField: 'textgenerationwebui_preset_names', valuesField: 'textgenerationwebui_presets' },
+    };
+
+    const parsePreset = (value) => {
+        if (typeof value !== 'string') return value && typeof value === 'object' ? value : {};
+        try { return JSON.parse(value); } catch { return {}; }
+    };
+
+    define('preset.kinds', async () => {
+        const result = await postJson('/api/settings/get');
+        const settings = parsePreset(result?.settings);
+        const kinds = [];
+        for (const [kind, spec] of Object.entries(PRESET_KINDS)) {
+            let names = [];
+            if (spec.namesField) {
+                names = Array.isArray(result?.[spec.namesField]) ? result[spec.namesField].map(String) : [];
+            } else {
+                const list = Array.isArray(result?.[spec.field]) ? result[spec.field] : [];
+                names = list.map((item) => String(item?.name ?? '')).filter(Boolean);
+            }
+            kinds.push({ kind, names });
+        }
+        return { kinds, current: String(settings?.oai_settings?.preset_settings_openai ?? '') };
+    });
+
+    /** One preset's full contents, by kind and name. */
+    define('preset.detail', async (args) => {
+        const kind = requireString(args, 'kind');
+        const name = requireString(args, 'name');
+        const spec = PRESET_KINDS[kind];
+        if (!spec) throw new LibraryError(`Unknown preset kind ${kind}`);
+        const result = await postJson('/api/settings/get');
+
+        if (kind === 'openai' || kind === 'textgen') {
+            const names = Array.isArray(result?.[spec.namesField]) ? result[spec.namesField].map(String) : [];
+            const values = Array.isArray(result?.[spec.valuesField]) ? result[spec.valuesField] : [];
+            const index = names.indexOf(name);
+            if (index < 0) throw new LibraryError(`No preset named ${name}`, 404);
+            return { kind, name, preset: parsePreset(values[index]), editable: kind === 'textgen' };
+        }
+
+        const list = Array.isArray(result?.[spec.field]) ? result[spec.field] : [];
+        const preset = list.find((item) => String(item?.name ?? '') === name);
+        if (!preset) throw new LibraryError(`No preset named ${name}`, 404);
+        return { kind, name, preset, editable: true };
+    });
+
+    /** Creates or overwrites a preset file through upstream's own endpoint. */
+    define('preset.save', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const kind = requireString(args, 'kind');
+        const name = requireString(args, 'name');
+        const preset = args.preset && typeof args.preset === 'object' ? args.preset : null;
+        if (!preset) throw new LibraryError('preset is required');
+        const spec = PRESET_KINDS[kind];
+        if (!spec) throw new LibraryError(`Unknown preset kind ${kind}`);
+        await postJson('/api/presets/save', { name, apiId: spec.apiId, preset });
+        // The core caches the settings it read at startup; a new file only shows
+        // up after its own loader runs again.
+        await api.getSettings();
+        restorePromptOrder?.(modules);
+        return { kind, name };
+    });
+
+    define('preset.delete', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const kind = requireString(args, 'kind');
+        const name = requireString(args, 'name');
+        const spec = PRESET_KINDS[kind];
+        if (!spec) throw new LibraryError(`Unknown preset kind ${kind}`);
+        if (kind === 'openai') throw new LibraryError('对话补全预设的删除请使用预设页的删除按钮。');
+        await postJson('/api/presets/delete', { name, apiId: spec.apiId });
+        await api.getSettings();
+        restorePromptOrder?.(modules);
+        return { deleted: name };
+    });
+
+    /** The shipped default for a preset name, so an edit can be reverted. */
+    define('preset.restore', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const kind = requireString(args, 'kind');
+        const name = requireString(args, 'name');
+        const spec = PRESET_KINDS[kind];
+        if (!spec) throw new LibraryError(`Unknown preset kind ${kind}`);
+        const restored = await postJson('/api/presets/restore', { name, apiId: spec.apiId });
+        if (!restored?.isDefault) return { restored: false, preset: restored?.preset ?? {} };
+        await postJson('/api/presets/save', { name, apiId: spec.apiId, preset: restored.preset });
+        await api.getSettings();
+        restorePromptOrder?.(modules);
+        return { restored: true, preset: restored.preset };
+    });
+
+    /** Creates a copy of a chat-completion preset (the editable kind). */
+    define('preset.duplicate', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const kind = requireString(args, 'kind');
+        const name = requireString(args, 'name');
+        const newName = requireString(args, 'newName');
+        const spec = PRESET_KINDS[kind];
+        if (!spec) throw new LibraryError(`Unknown preset kind ${kind}`);
+        const result = await postJson('/api/settings/get');
+        let preset = {};
+        if (spec.namesField) {
+            const names = Array.isArray(result?.[spec.namesField]) ? result[spec.namesField].map(String) : [];
+            const values = Array.isArray(result?.[spec.valuesField]) ? result[spec.valuesField] : [];
+            const index = names.indexOf(name);
+            if (index < 0) throw new LibraryError(`No preset named ${name}`, 404);
+            preset = parsePreset(values[index]);
+        } else {
+            const list = Array.isArray(result?.[spec.field]) ? result[spec.field] : [];
+            preset = list.find((item) => String(item?.name ?? '') === name);
+            if (!preset) throw new LibraryError(`No preset named ${name}`, 404);
+            preset = { ...preset, name: newName };
+        }
+        await postJson('/api/presets/save', { name: newName, apiId: spec.apiId, preset });
+        await api.getSettings();
+        restorePromptOrder?.(modules);
+        return { kind, name: newName };
+    });
+
+    // ---- extensions --------------------------------------------------------
+
+    /** Installed extensions, their manifests and whether they are enabled. */
+    define('extension.list', async () => {
+        const { modules } = await coreBundle();
+        const discovered = await postJsonArray('/api/extensions/discover', null, 'GET');
+        const disabled = modules.extensions.extension_settings?.disabledExtensions ?? [];
+        const extensions = discovered.map((entry) => {
+            const name = String(entry?.name ?? '');
+            const manifest = modules.extensions.getExtensionManifest(name) ?? {};
+            const short = name.includes('/') ? name.split('/').pop() : name;
+            return {
+                name,
+                shortName: short,
+                type: String(entry?.type ?? ''),
+                displayName: String(manifest.display_name ?? short),
+                version: String(manifest.version ?? ''),
+                author: String(manifest.author ?? ''),
+                description: String(manifest.description ?? ''),
+                enabled: !disabled.includes(name) && !disabled.includes(short),
+                hasManifest: Boolean(manifest && Object.keys(manifest).length),
+            };
+        });
+        return { extensions };
+    });
+
+    define('extension.toggle', async (args) => {
+        const { modules } = await coreBundle();
+        const name = requireString(args, 'name');
+        const enabled = args.enabled !== false;
+        if (enabled) {
+            await modules.extensions.enableExtension(name, false);
+        } else {
+            await modules.extensions.disableExtension(name, false);
+        }
+        return { name, enabled, reloadRequired: true };
+    });
+
+    define('extension.install', async (args) => {
+        const { modules } = await coreBundle();
+        const url = requireString(args, 'url');
+        const branch = typeof args.branch === 'string' ? args.branch : '';
+        // Upstream's own installer: validates the URL, clones, and reports the
+        // manifest it found. It shows a third-party warning in the web UI; the
+        // native caller is the one making the decision, so the raw endpoint is
+        // used instead of the UI wrapper.
+        const installed = await postJson('/api/extensions/install', { url, global: false, branch });
+        await modules.extensions.loadExtensionSettings({}, false, false);
+        return { installed };
+    });
+
+    define('extension.delete', async (args) => {
+        const { modules } = await coreBundle();
+        const name = requireString(args, 'name');
+        await postJson('/api/extensions/delete', { extensionName: name, global: false });
+        await modules.extensions.loadExtensionSettings({}, false, false);
+        return { deleted: name };
+    });
+
+    define('extension.update', async (args) => {
+        const { modules } = await coreBundle();
+        const name = requireString(args, 'name');
+        const updated = await postJson('/api/extensions/update', { extensionName: name, global: false });
+        await modules.extensions.loadExtensionSettings({}, false, false);
+        return { updated };
+    });
+
+    /** The branch list of an installed git extension, for the update picker. */
+    define('extension.branches', async (args) => {
+        const name = requireString(args, 'name');
+        const result = await postJson('/api/extensions/branches', { extensionName: name, global: false });
+        return { branches: Array.isArray(result) ? result : [] };
+    });
+
     // ---- world info --------------------------------------------------------
+
 
 
 
@@ -1188,29 +1406,73 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
 
     define('persona.list', async () => {
         const settings = await readSettingsFile();
-        const personas = settings.personas && typeof settings.personas === 'object' ? settings.personas : {};
-        const current = String(settings.user_avatar ?? '');
+        // Personas live in the live power-user object; the saved copy is only a
+        // snapshot, and a persona created a moment ago may not be in it yet.
+        const powerUser = globalThis.SillyTavern.getContext().powerUserSettings ?? {};
+        const source = powerUser.personas && Object.keys(powerUser.personas).length
+            ? powerUser.personas
+            : (settings.personas ?? {});
+        const details = powerUser.persona_descriptions ?? {};
+        const personas = {};
+        for (const [avatar, name] of Object.entries(source)) {
+            const detail = details[avatar] ?? {};
+            personas[avatar] = {
+                name: String(name ?? avatar),
+                description: String(detail.description ?? ''),
+                title: String(detail.title ?? ''),
+            };
+        }
+        const current = String(settings.user_avatar ?? powerUser.user_avatar ?? '');
         return {
             personas: Object.entries(personas).map(([avatar, persona]) => ({
                 avatar,
-                name: String(persona?.name ?? avatar.replace(/\.[^.]+$/, '')),
-                description: String(persona?.description ?? ''),
-                title: String(persona?.title ?? ''),
+                name: persona.name,
+                description: persona.description,
+                title: persona.title,
                 current: avatar === current,
             })),
         };
+    });
+
+    /** Stores a persona avatar through the endpoint the web UI uploads to. */
+    define('persona.upload', async (args) => {
+        const fileName = requireString(args, 'fileName');
+        const data = requireString(args, 'data');
+        // Upstream's upload route wants the overwrite name as a query flag and
+        // reads the file from the `avatar` field.
+        const base = fileName.replace(/\.[^.]+$/, '');
+        const target = `${base}.png`;
+        const stored = await postForm(`/api/avatars/upload?overwrite_name=${encodeURIComponent(target)}`, {}, {
+            name: fileName,
+            type: 'image/png',
+            data: Buffer.from(data, 'base64'),
+        });
+        const avatar = String(stored?.path ?? target);
+        const { modules } = await coreBundle();
+        const name = typeof args.name === 'string' && args.name ? args.name : base;
+        const description = typeof args.description === 'string' ? args.description : '';
+        // The upload stores the image; a persona is the image plus the settings
+        // entry, which upstream creates through initPersona().
+        await modules.personas.initPersona(avatar, name, description, '');
+        log(`persona created ${avatar} (${name})`);
+        return { avatar, name };
     });
 
     define('persona.select', async (args) => {
         const { core: api } = await coreBundle();
         const avatar = requireString(args, 'avatar');
         const settings = await readSettingsFile();
-        const persona = settings.personas?.[avatar];
-        if (!persona) throw new LibraryError(`No persona with avatar ${avatar}`, 404);
+        const live = globalThis.SillyTavern.getContext().powerUserSettings ?? {};
+        const name = live.personas?.[avatar] ?? settings.personas?.[avatar]?.name;
+        if (!name) throw new LibraryError(`No persona with avatar ${avatar}`, 404);
         settings.user_avatar = avatar;
+        // Upstream reads the speaker name back from the saved `username`, so the
+        // choice is written there as well as applied to the live object.
+        settings.username = String(name);
         await postJson('/api/settings/save', settings);
-        api.setUserName(String(persona.name ?? 'User'), { toastPersonaNameChange: false });
-        return { name: String(persona.name ?? 'User'), avatar };
+        live.user_avatar = avatar;
+        api.setUserName(String(name), { toastPersonaNameChange: false });
+        return { name: String(name), avatar };
     });
 
     return {

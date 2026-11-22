@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var testing = false
     @State private var notice: String?
     @State private var testResult: String?
+    @State private var importingPersona = false
 
     private struct Provider: Identifiable, Hashable {
         let id: String
@@ -134,6 +135,36 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    Button {
+                        importingPersona = true
+                    } label: {
+                        Label("导入人设图片", systemImage: "person.crop.circle.badge.plus")
+                    }
+                } header: {
+                    Text("人设")
+                } footer: {
+                    Text("选一张 PNG/JPEG 作为人设头像，名称沿用文件名。")
+                }
+
+                Section("预设与提示词") {
+                    NavigationLink {
+                        PresetManagerView(app: app)
+                    } label: {
+                        Label("对话补全预设", systemImage: "slider.horizontal.3")
+                    }
+                    NavigationLink {
+                        PromptListView(app: app)
+                    } label: {
+                        Label("提示词顺序", systemImage: "list.number")
+                    }
+                    NavigationLink {
+                        ExtensionsView(app: app)
+                    } label: {
+                        Label("扩展", systemImage: "puzzlepiece.extension")
+                    }
+                }
+
                 Section("本地引擎") {
                     switch app.engine.phase {
                     case .idle:
@@ -187,6 +218,11 @@ struct SettingsView: View {
                 syncFromSettings(force: true)
             }
             .onAppear { syncFromSettings(force: false) }
+            .documentPicker(isPresented: $importingPersona, types: ImportTypes.personaImage, allowsMultiple: false) { files in
+                Task { await importPersona(files) }
+            } onFailure: { message in
+                notice = message
+            }
             .onChange(of: app.settings) { _, _ in syncFromSettings(force: false) }
         }
     }
@@ -233,6 +269,28 @@ struct SettingsView: View {
             notice = success ? "模型连接已保存。" : (app.errorMessage ?? "保存失败。")
         }
         return success
+    }
+
+    /// Stores a persona avatar through the core's own upload route, which also
+    /// creates the persona entry so it shows up in the list immediately.
+    private func importPersona(_ files: [PickedFile]) async {
+        guard let client = app.client, let file = files.first else { return }
+        do {
+            struct Stored: Decodable { let avatar: String; let name: String }
+            let stored = try await client.call(
+                "persona.upload",
+                args: [
+                    "fileName": .string(file.name),
+                    "name": .string((file.name as NSString).deletingPathExtension),
+                    "data": .string(file.data.base64EncodedString()),
+                ],
+                as: Stored.self
+            )
+            await app.refreshPersonas()
+            notice = "已保存人设 \(stored.name)。"
+        } catch {
+            notice = "导入人设失败：\(error.localizedDescription)"
+        }
     }
 
     private func testConnection() async {

@@ -102,6 +102,31 @@ try {
     assert.ok(!afterDelete.groups.some((item) => item.id === group.group.id));
     console.log('ok group delete');
 
+    const persona = await call('persona.upload', {
+        fileName: 'Tester.png',
+        name: 'Tester',
+        data: avatarPng.toString('base64'),
+    });
+    const personas = await call('persona.list');
+    assert.ok(personas.personas.some((item) => item.name === 'Tester'));
+    console.log('ok persona upload');
+
+    const selected = await call('persona.select', { avatar: persona.avatar });
+    assert.equal(selected.name, 'Tester');
+    console.log('ok persona select');
+
+    // Presets of every kind the tavern keeps, plus the extension list.
+    const kinds = await call('preset.kinds');
+    assert.ok(kinds.kinds.find((entry) => entry.kind === 'context').names.length > 5);
+    const detail = await call('preset.detail', { kind: 'context', name: 'ChatML' });
+    assert.ok(detail.preset.story_string);
+    assert.ok(detail.preset.story_string.includes('{{#if system}}'), 'the template is the real one');
+    console.log('ok presets', kinds.kinds.length, 'kinds');
+
+    const extensions = await call('extension.list');
+    assert.ok(extensions.extensions.some((item) => item.name === 'regex'), 'the bundled Regex extension is listed');
+    console.log('ok extensions', extensions.extensions.length);
+
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');
 } catch (error) {

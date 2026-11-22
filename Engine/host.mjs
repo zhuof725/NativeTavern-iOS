@@ -6,6 +6,8 @@
 //     reimplement SillyTavern's CSRF handshake, while still letting upstream own
 //     every endpoint, header, and payload format.
 import http from 'node:http';
+import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 export const PROTOCOL_VERSION = 2;
@@ -132,6 +134,29 @@ async function handle(request, response, { expected, session, getEngine, waitFor
     response.writeHead(upstreamResponse.status, upstreamResponse.headers);
     if (upstreamResponse.body) response.end(upstreamResponse.body);
     else response.end();
+}
+
+/** Minimal content types for the extension files served above. */
+function contentTypeFor(file) {
+    const ext = path.extname(file).toLowerCase();
+    const types = {
+        '.js': 'text/javascript; charset=utf-8',
+        '.mjs': 'text/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.html': 'text/html; charset=utf-8',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.svg': 'image/svg+xml',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.wasm': 'application/wasm',
+        '.md': 'text/markdown; charset=utf-8',
+    };
+    return types[ext] ?? 'application/octet-stream';
 }
 
 function pickHeaders(headers) {

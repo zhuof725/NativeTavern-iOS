@@ -4,7 +4,7 @@
 // Nothing here reimplements SillyTavern: it starts upstream's own server.js,
 // then runs upstream's own public/script.js module graph on a minimal DOM so the
 // real world-info, macro and prompt-assembly code is what answers the app.
-import { mkdir, writeFile, rename, readFile, appendFile, copyFile } from 'node:fs/promises';
+import { mkdir, writeFile, rename, readFile, appendFile, copyFile, symlink, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -186,6 +186,30 @@ async function startUpstream(root, dataDir, port) {
     for (const relative of ['backups', 'cache', 'public/img', 'public/sounds', 'public/scripts/extensions/third-party']) {
         await mkdir(path.join(workRoot, relative), { recursive: true });
     }
+
+    // Upstream discovers extensions by reading `public/scripts/extensions`
+    // relative to its working directory, while the bundle's own extensions live
+    // in the read-only one. Each built-in is linked into the work tree so both
+    // sets are visible; user installs go to the writable `third-party` folder.
+    const bundledExtensions = path.join(root, 'public/scripts/extensions');
+    try {
+        for (const entry of await readdir(bundledExtensions, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.name === 'third-party') continue;
+            const target = path.join(workRoot, 'public/scripts/extensions', entry.name);
+            try {
+                await symlink(path.join(bundledExtensions, entry.name), target, 'dir');
+            } catch {
+                // Already linked (a later launch) or not permitted: either way the
+                // extension is still served from the bundle by the static route.
+            }
+        }
+    } catch {
+        // No bundled extensions directory: nothing to link.
+    }
+
+    // Files installed into the work tree (third-party extensions) are not under
+    // express's static root, so the gateway serves them from disk.
+    process.env.NT_EXTENSIONS_ROOT = path.join(workRoot, 'public/scripts/extensions');
     for (const [source, target] of [
         [path.join(root, 'public/img/ai4.png'), path.join(workRoot, 'public/img/ai4.png')],
         [path.join(root, 'config.yaml'), path.join(workRoot, 'config.yaml')],

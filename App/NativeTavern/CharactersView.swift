@@ -93,8 +93,10 @@ struct CharactersView: View {
             .sheet(item: $editing) { character in
                 CharacterEditorView(app: app, character: character)
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
-                handleImport(result)
+            .documentPicker(isPresented: $importing, types: ImportTypes.characterCards) { files in
+                Task { await importFiles(files) }
+            } onFailure: { message in
+                app.errorMessage = message
             }
             .alert("删除角色？", isPresented: Binding(
                 get: { pendingDelete != nil },
@@ -113,16 +115,17 @@ struct CharactersView: View {
         }
     }
 
-    private func handleImport(_ result: Result<URL, Error>) {
-        do {
-            let url = try result.get()
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-            let data = try Data(contentsOf: url)
-            let name = url.lastPathComponent
-            Task { _ = await app.importCharacter(fileName: name, data: data) }
-        } catch {
-            app.errorMessage = "读取文件失败：\(error.localizedDescription)"
+    /// Cards are read by the picker, so each one is already in memory here; the
+    /// security scope has been released and the import can take its time.
+    private func importFiles(_ files: [PickedFile]) async {
+        var failures: [String] = []
+        for file in files {
+            if await app.importCharacter(fileName: file.name, data: file.data) == nil {
+                failures.append("\(file.name)：\(app.errorMessage ?? "解析失败")")
+            }
+        }
+        if !failures.isEmpty {
+            app.errorMessage = "部分文件没有导入成功：\n" + failures.joined(separator: "\n")
         }
     }
 }

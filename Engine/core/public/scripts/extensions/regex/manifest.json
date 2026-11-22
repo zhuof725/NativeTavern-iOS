@@ -1,0 +1,11 @@
+{
+    "display_name": "Regex",
+    "loading_order": 1,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SillyTavern",
+    "version": "1.0.0",
+    "auto_update": false
+}
