@@ -16,7 +16,6 @@ struct SettingsView: View {
     @State private var testing = false
     @State private var notice: String?
     @State private var testResult: String?
-    @State private var importingPersona = false
 
     private struct Provider: Identifiable, Hashable {
         let id: String
@@ -137,7 +136,7 @@ struct SettingsView: View {
 
                 Section {
                     Button {
-                        importingPersona = true
+                        pickPersonaImage()
                     } label: {
                         Label("导入人设图片", systemImage: "person.crop.circle.badge.plus")
                     }
@@ -218,11 +217,7 @@ struct SettingsView: View {
                 syncFromSettings(force: true)
             }
             .onAppear { syncFromSettings(force: false) }
-            .documentPicker(isPresented: $importingPersona, types: ImportTypes.personaImage, allowsMultiple: false) { files in
-                Task { await importPersona(files) }
-            } onFailure: { message in
-                notice = message
-            }
+
             .onChange(of: app.settings) { _, _ in syncFromSettings(force: false) }
         }
     }
@@ -269,6 +264,18 @@ struct SettingsView: View {
             notice = success ? "模型连接已保存。" : (app.errorMessage ?? "保存失败。")
         }
         return success
+    }
+
+    private func pickPersonaImage() {
+        DocumentPickerPresenter.present(
+            configuration: .init(types: ImportTypes.personaImage, allowsMultiple: false),
+            onPick: { files in
+                Task { await importPersona(files) }
+            },
+            onFailure: { message in
+                notice = message
+            }
+        )
     }
 
     /// Stores a persona avatar through the core's own upload route, which also

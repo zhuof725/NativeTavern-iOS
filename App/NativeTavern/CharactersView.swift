@@ -13,7 +13,6 @@ struct CharactersView: View {
     @State private var query = ""
     @State private var creating = false
     @State private var editing: CharacterSummary?
-    @State private var importing = false
     @State private var pendingDelete: CharacterSummary?
 
     private var filtered: [CharacterSummary] {
@@ -72,7 +71,7 @@ struct CharactersView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        importing = true
+                        pickCards()
                     } label: {
                         Image(systemName: "square.and.arrow.down")
                     }
@@ -93,11 +92,7 @@ struct CharactersView: View {
             .sheet(item: $editing) { character in
                 CharacterEditorView(app: app, character: character)
             }
-            .documentPicker(isPresented: $importing, types: ImportTypes.characterCards) { files in
-                Task { await importFiles(files) }
-            } onFailure: { message in
-                app.errorMessage = message
-            }
+
             .alert("删除角色？", isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
@@ -113,6 +108,21 @@ struct CharactersView: View {
                 Text("角色和它的全部聊天记录都会删除。")
             }
         }
+    }
+
+    /// The picker is presented from the window, not from this view: a document
+    /// picker is a modal controller and hosting it inside SwiftUI crashed on
+    /// device (SwiftUI asserted in UIViewControllerRepresentable._makeView).
+    private func pickCards() {
+        DocumentPickerPresenter.present(
+            configuration: .init(types: ImportTypes.characterCards, allowsMultiple: true),
+            onPick: { files in
+                Task { await importFiles(files) }
+            },
+            onFailure: { message in
+                app.errorMessage = "读取文件失败：\n" + message
+            }
+        )
     }
 
     /// Cards are read by the picker, so each one is already in memory here; the

@@ -14,68 +14,103 @@ struct PickedFile: Identifiable {
     }
 }
 
-/// A UIKit document picker.
+/// Presents `UIDocumentPickerViewController` on top of the app's window.
 ///
-/// SwiftUI's `fileImporter` is a wrapper with a fixed set of behaviours; using
-/// `UIDocumentPickerViewController` directly gives control over the modes and
-/// content types, and reports the picked URLs through one delegate that reads
-/// each file inside its security scope. The data is copied out before the scope
-/// closes, because an import runs several network round-trips afterwards.
-final class DocumentPicker: NSObject, UIDocumentPickerDelegate, UIViewControllerRepresentable {
+/// SwiftUI cannot host a document picker: it is a modal controller that expects
+/// to be presented, and nesting it in a `UIViewControllerRepresentable` inside a
+/// sheet is what triggered a SwiftUI assertion (`UIViewControllerRepresentable
+/// ._makeView`) on device. Presenting it from the key window's topmost
+/// controller is the documented way, and it keeps the picker out of the view
+/// hierarchy entirely.
+@MainActor
+enum DocumentPickerPresenter {
     struct Configuration {
         var types: [UTType] = [.item]
         var allowsMultiple = true
         var copiesOnPick = true
     }
 
-    let configuration: Configuration
-    let onPick: ([PickedFile]) -> Void
-    let onFailure: (String) -> Void
-
-    init(configuration: Configuration,
-         onPick: @escaping ([PickedFile]) -> Void,
-         onFailure: @escaping (String) -> Void = { _ in }) {
-        self.configuration = configuration
-        self.onPick = onPick
-        self.onFailure = onFailure
-    }
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+    static func present(configuration: Configuration,
+                        onPick: @escaping ([PickedFile]) -> Void,
+                        onFailure: @escaping (String) -> Void = { _ in }) {
+        guard let presenter = topViewController() else {
+            onFailure("找不到可用的窗口，无法打开文件选择器。")
+            return
+        }
+        let coordinator = Coordinator(onPick: onPick, onFailure: onFailure)
         let picker = UIDocumentPickerViewController(
             forOpeningContentTypes: configuration.types,
             asCopy: configuration.copiesOnPick
         )
         picker.allowsMultipleSelection = configuration.allowsMultiple
-        picker.delegate = self
         picker.shouldShowFileExtensions = true
-        return picker
+        picker.delegate = coordinator
+        // The delegate is weak on UIKit's side; the picker is the only strong
+        // reference holder, so the coordinator is parked here until it ends.
+        presenters[picker] = coordinator
+        presenter.present(picker, animated: true)
     }
 
-    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+    /// Live coordinators, keyed by the picker that owns them.
+    fileprivate static var presenters: [UIDocumentPickerViewController: Coordinator] = [:]
 
-    // MARK: UIDocumentPickerDelegate
+    /// The controller a modal should be presented from.
+    private static func topViewController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        guard var top = scene?.windows.first(where: \.isKeyWindow)?.rootViewController
+                ?? scene?.windows.first?.rootViewController else { return nil }
+        while let presented = top.presentedViewController, !presented.isBeingDismissed {
+            top = presented
+        }
+        return top
+    }
 
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        var files: [PickedFile] = []
-        var failures: [String] = []
-        for url in urls {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                // `.copy` already staged the file in the app's inbox; reading it
-                // there still benefits from the scope being held.
-                let data = try Data(contentsOf: url, options: .mappedIfSafe)
-                files.append(PickedFile(name: url.lastPathComponent, data: data))
-            } catch {
-                failures.append("\(url.lastPathComponent)：\(error.localizedDescription)")
+    @MainActor
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onPick: ([PickedFile]) -> Void
+        private let onFailure: (String) -> Void
+
+        init(onPick: @escaping ([PickedFile]) -> Void, onFailure: @escaping (String) -> Void) {
+            self.onPick = onPick
+            self.onFailure = onFailure
+        }
+
+        nonisolated func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            // UIKit calls this on the main thread; the protocol itself is not
+            // annotated, so isolation is asserted here rather than promised.
+            MainActor.assumeIsolated {
+                handlePick(controller, urls: urls)
             }
         }
-        if !files.isEmpty { onPick(files) }
-        if !failures.isEmpty { onFailure(failures.joined(separator: "\n")) }
-    }
 
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        // Nothing was selected; the caller's sheet dismisses itself.
+        nonisolated func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            MainActor.assumeIsolated {
+                DocumentPickerPresenter.presenters.removeValue(forKey: controller)
+            }
+        }
+
+        private func handlePick(_ controller: UIDocumentPickerViewController, urls: [URL]) {
+            DocumentPickerPresenter.presenters.removeValue(forKey: controller)
+            var files: [PickedFile] = []
+            var failures: [String] = []
+            for url in urls {
+                // `asCopy` staged the file in the app's inbox, but the security
+                // scope is what guarantees access while it is read.
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let data = try Data(contentsOf: url)
+                    files.append(PickedFile(name: url.lastPathComponent, data: data))
+                } catch {
+                    failures.append("\(url.lastPathComponent)：\(error.localizedDescription)")
+                }
+            }
+            if !files.isEmpty { onPick(files) }
+            if !failures.isEmpty { onFailure(failures.joined(separator: "\n")) }
+        }
     }
 }
 
@@ -91,25 +126,4 @@ enum ImportTypes {
 
     static var personaImage: [UTType] { [.png, .jpeg, .heic, .webP] }
     static var presets: [UTType] { [.json] }
-}
-
-extension View {
-    /// Presents the UIKit picker as a sheet.
-    func documentPicker(isPresented: Binding<Bool>,
-                        types: [UTType],
-                        allowsMultiple: Bool = true,
-                        onPick: @escaping ([PickedFile]) -> Void,
-                        onFailure: @escaping (String) -> Void = { _ in }) -> some View {
-        sheet(isPresented: isPresented) {
-            DocumentPicker(
-                configuration: .init(types: types, allowsMultiple: allowsMultiple),
-                onPick: { files in
-                    isPresented.wrappedValue = false
-                    onPick(files)
-                },
-                onFailure: onFailure
-            )
-            .ignoresSafeArea()
-        }
-    }
 }
