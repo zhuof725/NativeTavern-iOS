@@ -8,9 +8,9 @@
 
 | 项 | 值 |
 |---|---|
-| IPA | `NativeTavern-unsigned.ipa`，约 109 MiB |
-| 提交 | `250a019` |
-| 构建记录 | [GitHub Actions](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/45014074566) |
+| IPA | `NativeTavern-unsigned.ipa`，约 109 MiB（0.2.0） |
+| 提交 | `b8491fb` |
+| 构建记录 | [GitHub Actions](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/45014721457) |
 | 签名 | 未签名，安装前需自签 |
 | 设备 | iPhone ARM64，iOS 17+ |
 | 验证 | 结构、SHA256 校验通过；**未在真机运行** |
