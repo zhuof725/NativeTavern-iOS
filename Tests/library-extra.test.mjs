@@ -56,6 +56,21 @@ try {
     assert.ok(Array.isArray(snapshot.presetNames));
     console.log('ok snapshot', snapshot.source, snapshot.currentModel);
 
+    const persona = await call('persona.upload', {
+        fileName: 'Tester.png',
+        name: 'Tester',
+        data: avatarPng.toString('base64'),
+    });
+    const personas = await call('persona.list');
+    assert.ok(personas.personas.some((item) => item.avatar === persona.avatar && item.name === 'Tester'));
+    console.log('ok persona upload', persona.avatar);
+
+    const selected = await call('persona.select', { avatar: persona.avatar });
+    assert.equal(selected.name, 'Tester');
+    const snapshot2 = await call('settings.snapshot');
+    assert.equal(snapshot2.userName, 'Tester');
+    console.log('ok persona select');
+
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');
 } catch (error) {

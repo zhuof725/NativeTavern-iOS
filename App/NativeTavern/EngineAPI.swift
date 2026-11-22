@@ -71,6 +71,16 @@ struct CharacterSummary: Decodable, Identifiable, Hashable {
 struct CharacterListReply: Decodable { let characters: [CharacterSummary] }
 struct CharacterReply: Decodable { let character: CharacterSummary; let avatar: String? }
 
+/// `character.import` reports the avatar it wrote, not a full card.
+struct ImportedCharacter: Decodable { let fileName: String; let raw: AnyJSON? }
+
+/// Decodes arbitrary upstream payloads (the import endpoint's echo).
+struct AnyJSON: Decodable {
+    init(from decoder: Decoder) throws {
+        _ = try? decoder.singleValueContainer()
+    }
+}
+
 /// Editable fields of a character card. Kept separate from the summary so the
 /// editor can hold partial text while typing.
 struct CharacterDraft {

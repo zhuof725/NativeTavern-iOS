@@ -98,6 +98,7 @@ struct PresetsView: View {
                 }
             }
             .navigationTitle("预设")
+            .navigationBarTitleDisplayMode(.inline)
             .refreshable {
                 await app.refreshPresets()
                 await app.refreshSettings()

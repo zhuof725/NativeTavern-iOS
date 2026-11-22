@@ -3,6 +3,7 @@ import UIKit
 
 struct SettingsView: View {
     @ObservedObject var app: AppModel
+    var onDataChanged: (() -> Void)? = nil
 
     @State private var source = "custom"
     @State private var model = ""
@@ -16,6 +17,7 @@ struct SettingsView: View {
     @State private var testing = false
     @State private var notice: String?
     @State private var testResult: String?
+    @State private var importingPersona = false
 
     private struct Provider: Identifiable, Hashable {
         let id: String
@@ -101,7 +103,19 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("人设") {
+                Section {
+                    Button {
+                        importingPersona = true
+                    } label: {
+                        Label("导入人设图片", systemImage: "person.crop.circle.badge.plus")
+                    }
+                } header: {
+                    Text("人设")
+                } footer: {
+                    Text("选一张 PNG/JPEG 作为人设头像；名称沿用文件名。")
+                }
+
+                Section {
                     if app.personas.isEmpty {
                         Text("还没有人设。酒馆的人设可以在角色卡导入后从设置中创建；当前对话使用上方的显示名称。")
                             .font(.footnote)
@@ -181,12 +195,16 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
             .refreshable {
                 await app.refreshSettings()
                 await app.refreshPersonas()
                 syncFromSettings(force: true)
             }
             .onAppear { syncFromSettings(force: false) }
+            .importPicker($importingPersona, kind: .persona) { urls in
+                Task { await importPersona(urls) }
+            }
             .onChange(of: app.settings) { _, _ in syncFromSettings(force: false) }
         }
     }
@@ -233,6 +251,33 @@ struct SettingsView: View {
             notice = success ? "模型连接已保存。" : (app.errorMessage ?? "保存失败。")
         }
         return success
+    }
+
+    /// Stores a persona avatar through the core's avatar endpoint.
+    private func importPersona(_ urls: [URL]) async {
+        guard let client = app.client, let url = urls.first else { return }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            notice = "无法读取所选文件。"
+            return
+        }
+        do {
+            struct Stored: Decodable { let avatar: String }
+            let stored = try await client.call(
+                "persona.upload",
+                args: [
+                    "fileName": .string(url.lastPathComponent),
+                    "name": .string(url.deletingPathExtension().lastPathComponent),
+                    "data": .string(data.base64EncodedString()),
+                ],
+                as: Stored.self
+            )
+            await app.refreshPersonas()
+            notice = "已保存人设 \(stored.avatar)。"
+        } catch {
+            notice = "导入人设失败：\(error.localizedDescription)"
+        }
     }
 
     private func testConnection() async {

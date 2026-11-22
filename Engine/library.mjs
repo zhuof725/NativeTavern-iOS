@@ -303,12 +303,18 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         const fileName = requireString(args, 'fileName');
         const data = requireString(args, 'data');
         const extension = (fileName.split('.').pop() || 'json').toLowerCase();
+        if (!['png', 'json', 'yaml', 'yml', 'charx', 'byaf'].includes(extension)) {
+            throw new LibraryError(`不支持的角色卡格式：.${extension}（可用 PNG / JSON / YAML / CHARX / BYAF）`);
+        }
+        // Upstream decides the importer from file_type and reads the upload
+        // from disk, so the MIME type only matters to any client-side preview.
+        const mimeTypes = { png: 'image/png', json: 'application/json', yaml: 'text/yaml', yml: 'text/yaml' };
         const result = await postForm('/api/characters/import', {
             file_type: extension,
             preserved_name: fileName,
         }, {
             name: fileName,
-            type: extension === 'png' ? 'image/png' : 'application/octet-stream',
+            type: mimeTypes[extension] ?? 'application/octet-stream',
             data: Buffer.from(data, 'base64'),
         });
         await api.getCharacters();
@@ -801,7 +807,7 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         };
         const source = String(openaiSettings.chat_completion_source ?? oai.chat_completion_source ?? 'openai');
         return {
-            userName: String(settings.username ?? 'User'),
+            userName: String(globalThis.SillyTavern.getContext().name1 ?? settings.username ?? 'User'),
             userAvatar: String(settings.user_avatar ?? ''),
             // The live value is what generation uses; the saved file can still
             // name the Horde until the next settings write.
@@ -856,7 +862,22 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
 
     define('persona.list', async () => {
         const settings = await readSettingsFile();
-        const personas = settings.personas && typeof settings.personas === 'object' ? settings.personas : {};
+        // Personas live in the live power-user object; the saved copy is only a
+        // snapshot, and a persona created a moment ago may not be in it yet.
+        const powerUser = globalThis.SillyTavern.getContext().powerUserSettings ?? {};
+        const source = powerUser.personas && Object.keys(powerUser.personas).length
+            ? powerUser.personas
+            : (settings.personas ?? {});
+        const details = powerUser.persona_descriptions ?? {};
+        const personas = {};
+        for (const [avatar, name] of Object.entries(source)) {
+            const detail = details[avatar] ?? {};
+            personas[avatar] = {
+                name: String(name ?? avatar),
+                description: String(detail.description ?? ''),
+                title: String(detail.title ?? ''),
+            };
+        }
         const current = String(settings.user_avatar ?? '');
         return {
             personas: Object.entries(personas).map(([avatar, persona]) => ({
@@ -869,16 +890,45 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         };
     });
 
+    /** Stores a persona avatar through the endpoint the web UI uploads to. */
+    define('persona.upload', async (args) => {
+        const fileName = requireString(args, 'fileName');
+        const data = requireString(args, 'data');
+        // Upstream's upload route wants the overwrite name as a query flag
+        // (`?overwrite_name=`) and reads the file from the `avatar` field.
+        const base = fileName.replace(/\.[^.]+$/, '');
+        const target = `${base}.png`;
+        const stored = await postForm(`/api/avatars/upload?overwrite_name=${encodeURIComponent(target)}`, {}, {
+            name: fileName,
+            type: 'image/png',
+            data: Buffer.from(data, 'base64'),
+        });
+        const avatar = String(stored?.path ?? target);
+        // The upload only stores the image. A persona is the image plus the
+        // settings entry, which upstream creates through initPersona().
+        const { modules } = await coreBundle();
+        const name = typeof args.name === 'string' && args.name ? args.name : base;
+        const description = typeof args.description === 'string' ? args.description : '';
+        await modules.personas.initPersona(avatar, name, description, '');
+        log(`persona created ${avatar} (${name})`);
+        return { avatar, name };
+    });
+
     define('persona.select', async (args) => {
         const { core: api } = await coreBundle();
         const avatar = requireString(args, 'avatar');
         const settings = await readSettingsFile();
-        const persona = settings.personas?.[avatar];
-        if (!persona) throw new LibraryError(`No persona with avatar ${avatar}`, 404);
+        const live = globalThis.SillyTavern.getContext().powerUserSettings ?? {};
+        const name = live.personas?.[avatar] ?? settings.personas?.[avatar]?.name;
+        if (!name) throw new LibraryError(`No persona with avatar ${avatar}`, 404);
         settings.user_avatar = avatar;
+        // Upstream reads the speaker name back from the saved `username`, so the
+        // choice has to be written there as well as applied to the live object.
+        settings.username = String(name);
         await postJson('/api/settings/save', settings);
-        api.setUserName(String(persona.name ?? 'User'), { toastPersonaNameChange: false });
-        return { name: String(persona.name ?? 'User'), avatar };
+        live.user_avatar = avatar;
+        api.setUserName(String(name), { toastPersonaNameChange: false });
+        return { name: String(name), avatar };
     });
 
     return {

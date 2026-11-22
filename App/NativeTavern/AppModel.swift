@@ -20,7 +20,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var presets: [PresetSummary] = []
     @Published private(set) var personas: [PersonaSummary] = []
     @Published private(set) var settings: SettingsSnapshot?
-    @Published var errorMessage: String?
+    /// Not every failure deserves a modal: the launch screen shows its own
+    /// message, so the alert is opt-in.
+    @Published var errorMessage: String? {
+        didSet { if errorMessage != nil { showErrorAlert = true } }
+    }
+    @Published var showErrorAlert = false
 
     let engine = EmbeddedEngine.shared
 
@@ -37,8 +42,8 @@ final class AppModel: ObservableObject {
             if let client = engine.client {
                 if let status = try? await client.status(), status.sillyTavernCoreReady {
                     phase = .starting("正在读取角色与世界书…")
-                    await loadAll()
-                    if case .failed = phase { return }
+                    // Listing the library must not block the UI from opening.
+                    Task { await loadAll() }
                     phase = .ready
                     return
                 }
@@ -128,11 +133,10 @@ final class AppModel: ObservableObject {
     func importCharacter(fileName: String, data: Data) async -> CharacterSummary? {
         guard let client else { return nil }
         do {
-            struct Imported: Decodable { let fileName: String }
             let imported = try await client.call(
                 "character.import",
                 args: ["fileName": .string(fileName), "data": .string(data.base64EncodedString())],
-                as: Imported.self
+                as: ImportedCharacter.self
             )
             await refreshCharacters()
             return characters.first { $0.avatar == imported.fileName }
