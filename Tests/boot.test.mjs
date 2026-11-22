@@ -53,7 +53,14 @@ test('boot serves the upstream core through the launch-token transport', { timeo
             headers: { authorization: `Bearer ${endpoint.token}`, 'content-type': 'application/json' },
             body: JSON.stringify({ id: randomUUID(), method, args }),
         });
-        return response.json();
+        const body = await response.json();
+        if (body.error) {
+            // The engine's stdout is the only place its failures are explained;
+            // without it a failed call looks like an unexplained rejection.
+            const tail = output.split('\n').filter((line) => /\[core\]|\[engine\]|\[upstream\]/.test(line)).slice(-6).join(' | ');
+            throw new Error(`${method}: ${body.error.code} ${body.error.message}${tail ? ` [engine: ${tail}]` : ''}`);
+        }
+        return body;
     };
 
     // The upstream server answers through the gateway before the frontend core
