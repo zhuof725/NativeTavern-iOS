@@ -37,6 +37,9 @@ const loadCore = () => {
         const runtime = await import('./core-runtime.mjs');
         restorePromptOrderHook = runtime.restorePromptOrder;
         try {
+            // The core's first load reads settings and characters from the
+            // vendored server, so it cannot start before that server answers.
+            await upstreamReady;
             const started = await runtime.startCore({
                 upstream,
                 coreRoot,
