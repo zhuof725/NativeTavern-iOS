@@ -50,15 +50,18 @@ actor LocalEngineClient {
     let token: String
     let session: URLSession
 
+    /// The gateway origin, safe to read from any thread.
+    nonisolated let origin: URL
+
     init(endpoint: EngineEndpoint, launchID: String) throws {
         baseURL = try endpoint.validatedURL(expectedLaunchID: launchID)
         token = endpoint.token
+        origin = baseURL
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
-        // Generation is synchronous from the app's point of view: this request
-        // stays open while the model writes. A short timeout would abandon a
-        // reply the core is still producing.
+        // Generation is synchronous from the caller's point of view: a request
+        // stays open while the model writes.
         configuration.timeoutIntervalForRequest = 600
         configuration.timeoutIntervalForResource = 900
         session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
@@ -80,5 +83,72 @@ actor LocalEngineClient {
             throw LocalEngineFailure("本地引擎响应与当前请求不匹配。")
         }
         return status
+    }
+}
+
+/// Minimal JSON argument shapes for engine calls.
+enum JSONValue: Encodable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case array([JSONValue])
+    case object([String: JSONValue])
+    case null
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
+
+struct EngineCall: Encodable {
+    let id: String
+    let method: String
+    let args: [String: JSONValue]
+
+    init(method: String, args: [String: JSONValue] = [:]) {
+        self.id = UUID().uuidString
+        self.method = method
+        self.args = args
+    }
+}
+
+struct RemoteFailure: Decodable {
+    let code: String
+    let message: String
+}
+
+struct EngineReply<Result: Decodable>: Decodable {
+    let id: String?
+    let result: Result?
+    let error: RemoteFailure?
+}
+
+extension LocalEngineClient {
+    /// One JSON-RPC call into the engine.
+    func call<Result: Decodable>(_ method: String, args: [String: JSONValue] = [:], as type: Result.Type) async throws -> Result {
+        let call = EngineCall(method: method, args: args)
+        var request = URLRequest(url: baseURL.appendingPathComponent("engine/rpc"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(call)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalEngineFailure("本地引擎没有返回 HTTP 响应。")
+        }
+        let reply = try JSONDecoder().decode(EngineReply<Result>.self, from: data)
+        if let error = reply.error { throw LocalEngineFailure("\(error.code): \(error.message)") }
+        guard http.statusCode == 200, reply.id == call.id, let result = reply.result else {
+            throw LocalEngineFailure("本地引擎响应与当前请求不匹配。")
+        }
+        return result
     }
 }

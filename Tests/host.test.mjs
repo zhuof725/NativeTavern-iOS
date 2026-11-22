@@ -82,12 +82,33 @@ test('unknown methods are reported as not implemented', async t => {
     assert.equal(body.error.code, 'METHOD_NOT_IMPLEMENTED');
 });
 
-test('paths outside the engine surface are not proxied', async t => {
+test('paths outside the page surface are not proxied', async t => {
     const host = await running(t);
-    const response = await fetch(`${host.endpoint.url}/api/settings/get`, {
+    // The interface's own API calls are forwarded verbatim (it requests
+    // /api/... from its origin), but arbitrary paths are still refused.
+    const response = await fetch(`${host.endpoint.url}/__not_the_page__/get`, {
         headers: { authorization: `Bearer ${host.endpoint.token}` },
     });
     assert.equal(response.status, 404);
+});
+
+test('the interface document is served to the browser session', async t => {
+    const host = await startLocalHost({
+        launchID: randomUUID(),
+        upstream: UPSTREAM,
+        shellPage: async () => '<!doctype html><script>location.replace("/?nt_session=" + token)</script>',
+    });
+    t.after(() => host.close());
+    const shell = await fetch(`${host.endpoint.url}/shell`);
+    assert.equal(shell.status, 200);
+    assert.match(await shell.text(), /nt_session/);
+});
+
+test('a browse token is single use', async t => {
+    const host = await running(t);
+    const token = 'test-token';
+    const first = await fetch(`${host.endpoint.url}/?nt_session=${token}`, { redirect: 'manual' });
+    assert.equal(first.status, 401, 'unknown tokens are refused');
 });
 
 test('upstream rest calls require the launch token too', async t => {

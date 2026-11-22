@@ -75,9 +75,21 @@ export async function installResolversAndBoot() {
         return body.result;
     };
 
+    /** A request carrying the browser session cookie instead of the header. */
+    const postCookie = async (apiPath, body, cookie) => {
+        const response = await fetch(`${endpoint.url}${apiPath}`, {
+            method: 'POST',
+            headers: { cookie, 'content-type': 'application/json' },
+            body: JSON.stringify(body ?? {}),
+        });
+        const text = await response.text();
+        try { return JSON.parse(text); } catch { return { status: response.status, text }; }
+    };
+
     return {
         endpoint,
         post,
+        postCookie,
         call,
         log: () => log,
         baseSettings: () => ({

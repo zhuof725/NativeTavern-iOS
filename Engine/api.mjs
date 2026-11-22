@@ -25,7 +25,7 @@ export class BadRequest extends Error {
  * @param {object} deps
  * @param {() => Promise<object>} deps.getCore lazily returns the started core
  */
-export function createEngineApi({ getCore, generation, library, saveChat, upstreamPost, restorePromptOrder }) {
+export function createEngineApi({ getCore, generation, library, webui, saveChat, upstreamPost, restorePromptOrder }) {
     const methods = new Map();
 
     const core = async () => {
@@ -269,6 +269,13 @@ export function createEngineApi({ getCore, generation, library, saveChat, upstre
     if (generation) {
         for (const name of generation.methods) {
             methods.set(name, (args) => generation.call(name, args));
+        }
+    }
+
+    // The web UI host's session answers without the core.
+    if (webui) {
+        for (const name of webui.methods) {
+            methods.set(name, (args) => webui.call(name, args));
         }
     }
 

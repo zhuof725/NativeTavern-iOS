@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Native Tavern</title>
+<style>
+    html, body { margin: 0; height: 100%; background: #1c1c1e; color: #ebebf5; }
+    body { font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+    main { height: 100%; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; }
+    .spin { width: 22px; height: 22px; border: 2px solid rgba(235,235,245,.25); border-top-color: #0a84ff; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+    <div class="spin"></div>
+    <div id="msg">正在打开酒馆界面…</div>
+</main>
+<script>
+    // The gateway token arrives in the fragment: fragments are never sent to a
+    // server, never logged, and never leak through Referer. It is used for one
+    // hop only; the gateway trades it for a cookie and redirects to the clean
+    // address, so the token is not left in the address bar or the history.
+    (function () {
+        var match = /#(.*)$/.exec(location.href);
+        var params = new URLSearchParams(match ? match[1] : '');
+        var target = params.get('target') || '__TARGET__';
+        var token = params.get('token');
+        if (!target || !token) {
+            document.getElementById('msg').textContent = '等待引擎就绪…';
+            return;
+        }
+        try { history.replaceState(null, '', location.pathname); } catch (e) { /* first-party only */ }
+        location.replace(target.replace(/\/+$/, '') + '/?nt_session=' + encodeURIComponent(token));
+    })();
+</script>
+</body>
+</html>

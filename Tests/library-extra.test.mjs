@@ -3,9 +3,20 @@
 // book activation.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { request } from 'node:http';
 import { installResolversAndBoot } from './support/engine-harness.mjs';
 
 const harness = await installResolversAndBoot();
+const origin = new URL(harness.endpoint.url);
+const requestToGateway = (path, onResponse) => {
+    // `rejectUnauthorized` off is not needed for loopback, but fetch handlers
+    // must consume the body or the socket stays half-open.
+    return request({ host: origin.hostname, port: origin.port, path, method: 'GET', agent: false },
+        (response) => {
+            if (onResponse === undefined) { response.resume(); return; }
+            onResponse(response);
+        });
+};
 const call = (method, args = {}) => harness.call(method, args);
 
 try {
@@ -55,6 +66,39 @@ try {
     assert.ok(typeof snapshot.currentModel === 'string');
     assert.ok(Array.isArray(snapshot.presetNames));
     console.log('ok snapshot', snapshot.source, snapshot.currentModel);
+
+    // The browser session: entry document → one-time token → cookie → interface.
+    const session = await call('webui.session');
+    const fragment = new URLSearchParams(new URL(session.browserURL).hash.slice(1));
+
+    const status = await new Promise((resolve, reject) => {
+        const request = requestToGateway(`/?nt_session=${fragment.get('token')}`, (response) => {
+            response.resume();
+            resolve({ status: response.statusCode, headers: response.headers });
+        });
+        request.on('error', reject);
+        request.end();
+    });
+    assert.equal(status.status, 302);
+    const cookie = (status.headers['set-cookie'] || [''])[0].split(';')[0];
+    assert.match(cookie, /^nt_session=/);
+
+    const shell = await new Promise((resolve, reject) => {
+        const request = requestToGateway('/shell', (response) => {
+            let text = '';
+            response.setEncoding('utf8');
+            response.on('data', (chunk) => { text += chunk; });
+            response.on('end', () => resolve({ status: response.statusCode, text }));
+        });
+        request.on('error', reject);
+        request.end();
+    });
+    assert.equal(shell.status, 200);
+    assert.match(shell.text, /nt_session/);
+
+    const settings = await harness.postCookie('/api/settings/get', {}, cookie);
+    assert.ok(settings && typeof settings === 'object', 'the interface can read its settings');
+    console.log('ok browser session');
 
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');

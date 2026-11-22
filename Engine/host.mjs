@@ -5,6 +5,10 @@
 //  2. It brokers the upstream session (cookie + CSRF) so the app doesn't have to
 //     reimplement SillyTavern's CSRF handshake, while still letting upstream own
 //     every endpoint, header, and payload format.
+//
+// A browser cannot send that Bearer header, so the system-browser host gets in
+// through `/shell`: a tiny entry document whose one-time token is traded for an
+// HttpOnly cookie scoped to this gateway. Everything else is unchanged.
 import http from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
@@ -23,10 +27,12 @@ class HostError extends Error {
  * @param {object} options
  * @param {string} options.launchID per-launch UUID supplied by the app
  * @param {string} options.upstream base URL of the upstream SillyTavern server
+ * @param {() => Promise<string>} [options.shellPage] entry document source
  */
-export async function startLocalHost({ launchID, upstream, waitForUpstream = async () => {} }) {
-    // The engine API is attached after listen: it depends on this host's session.
+export async function startLocalHost({ launchID, upstream, shellPage = null, waitForUpstream = async () => {} }) {
     let engine = null;
+    // Answers that must work before the core has finished loading.
+    let early = null;
     if (typeof launchID !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(launchID)) {
         throw new HostError('INVALID_LAUNCH', 'A per-launch UUID is required.');
     }
@@ -36,29 +42,29 @@ export async function startLocalHost({ launchID, upstream, waitForUpstream = asy
 
     const token = randomBytes(32).toString('hex');
     const expected = Buffer.from(`Bearer ${token}`);
+    // Cookie value the browser gets: derived, not the raw token, so a leaked
+    // cookie cannot be replayed as an Authorization header.
+    const cookieValue = `nt_${token.slice(0, 32)}`;
     const session = new UpstreamSession(upstream);
 
     const server = http.createServer((request, response) => {
-        handle(request, response, { expected, session, getEngine: () => engine, waitForUpstream }).catch((error) => {
-            // A 500 here is otherwise silent: log the stack so the engine log
-            // explains which call failed and why.
-            if (!(error instanceof HostError)) {
-                console.log('[host] request failed:', error?.stack ?? error,
-                    '| cause:', error?.cause?.code ?? error?.cause?.message ?? 'none',
-                    '| fetch:', globalThis.fetch?.name, !!globalThis.fetch?.__loopbackInstalled,
-                    '| keys:', Object.keys(error ?? {}).join(','));
-            }
-            const known = error instanceof HostError;
-            if (!response.headersSent) {
-                response.writeHead(known ? error.status : 500, { 'content-type': 'application/json; charset=utf-8' });
-            }
-            response.end(JSON.stringify({
-                error: {
-                    code: known ? error.code : 'INTERNAL_ERROR',
-                    message: known ? error.message : 'Local engine request failed.',
-                },
-            }));
-        });
+        handle(request, response, { expected, cookieValue, session, getEngine: () => engine, getEarly: () => early, shellPage, waitForUpstream })
+            .catch((error) => {
+                if (!(error instanceof HostError)) {
+                    console.log('[host] request failed:', error?.stack ?? error,
+                        '| cause:', error?.cause?.code ?? error?.cause?.message ?? 'none');
+                }
+                const known = error instanceof HostError;
+                if (!response.headersSent) {
+                    response.writeHead(known ? error.status : 500, { 'content-type': 'application/json; charset=utf-8' });
+                }
+                response.end(JSON.stringify({
+                    error: {
+                        code: known ? error.code : 'INTERNAL_ERROR',
+                        message: known ? error.message : 'Local engine request failed.',
+                    },
+                }));
+            });
     });
     server.requestTimeout = 0;
     server.headersTimeout = 30000;
@@ -71,10 +77,16 @@ export async function startLocalHost({ launchID, upstream, waitForUpstream = asy
     });
     const address = server.address();
     return {
-        // Exposed so the engine API can call the vendored server with the same
-        // session and CSRF handling the transport uses.
         session,
-        attachEngine(api) { engine = api; },
+        token,
+        attachEngine(api) {
+            engine = api;
+            // The early surface serves the browser session; once the core is up
+            // it is merged with the full API.
+            if (api) api.consumeBrowseToken = early?.consumeBrowseToken?.bind(early);
+            if (api && early) api.early = early;
+        },
+        attachEarly(api) { early = api; },
         endpoint: {
             protocolVersion: PROTOCOL_VERSION,
             launchID,
@@ -89,23 +101,87 @@ export async function startLocalHost({ launchID, upstream, waitForUpstream = asy
     };
 }
 
-async function handle(request, response, { expected, session, getEngine, waitForUpstream }) {
-    const engine = getEngine();
+function surface(engine, early) {
+    if (!early) return engine;
+    if (!engine) return early;
+    // Browser tokens live on the early surface; everything else on the core's.
+    if (engine.consumeBrowseToken) return engine;
+    return {
+        methods: [...new Set([...early.methods, ...engine.methods])],
+        consumeBrowseToken: (value) => early.consumeBrowseToken(value),
+        call(name, args) {
+            if (early.methods.includes(name)) return early.call(name, args);
+            return engine.call(name, args);
+        },
+    };
+}
+
+function isAuthorized(request, expected, cookieValue) {
+    const cookie = parseCookies(request.headers.cookie);
+    if (cookie.nt_session && cookie.nt_session === cookieValue) return true;
+    const authorization = Buffer.from(request.headers.authorization || '');
+    return authorization.length === expected.length && timingSafeEqual(authorization, expected);
+}
+
+function parseCookies(header) {
+    const jar = {};
+    if (!header) return jar;
+    for (const part of String(header).split(';')) {
+        const index = part.indexOf('=');
+        if (index > 0) jar[part.slice(0, index).trim()] = part.slice(index + 1).trim();
+    }
+    return jar;
+}
+
+function sendShellPage(response, html) {
+    response.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+    });
+    response.end(html);
+}
+
+async function handle(request, response, { expected, cookieValue, session, getEngine, getEarly, shellPage, waitForUpstream }) {
+    const engine = surface(getEngine(), getEarly?.());
     if (request.headers.origin) {
         throw new HostError('ORIGIN_DENIED', 'Browser origins are not accepted.', 403);
     }
-    const authorization = Buffer.from(request.headers.authorization || '');
-    if (authorization.length !== expected.length || !timingSafeEqual(authorization, expected)) {
+
+    const url = new URL(request.url, 'http://127.0.0.1');
+
+    // Browser entry document. It is public (no secret in it): the one-time token
+    // travels in the fragment, which a server never receives.
+    if (url.pathname === '/shell') {
+        if (!shellPage) throw new HostError('NOT_FOUND', 'Unknown endpoint.', 404);
+        return sendShellPage(response, await shellPage());
+    }
+
+    // The hop from the entry document: trade the token for the cookie. The query
+    // value has already been consumed once, so a replay is rejected.
+    if (url.pathname === '/' && url.searchParams.has('nt_session')) {
+        const browse = String(url.searchParams.get('nt_session'));
+        if (!engine?.consumeBrowseToken?.(browse)) {
+            throw new HostError('UNAUTHORIZED', 'A valid browse token is required.', 401);
+        }
+        response.writeHead(302, {
+            location: '/',
+            'set-cookie': `nt_session=${cookieValue}; Path=/; HttpOnly; SameSite=Lax`,
+            'cache-control': 'no-store',
+        });
+        response.end();
+        return;
+    }
+
+    if (!isAuthorized(request, expected, cookieValue)) {
         throw new HostError('UNAUTHORIZED', 'A valid per-launch token is required.', 401);
     }
 
-    const url = new URL(request.url, 'http://127.0.0.1');
     if (url.pathname === '/engine/status') {
         return json(response, 200, {
             protocolVersion: PROTOCOL_VERSION,
             runtime: process.version,
             transportReady: true,
-            // The upstream core is what the transport talks to; it is running.
             sillyTavernCoreReady: await session.ready(),
             upstream: session.origin,
             capabilities: engine ? engine.methods : ['engine.status'],
@@ -114,7 +190,17 @@ async function handle(request, response, { expected, session, getEngine, waitFor
     if (url.pathname === '/engine/rpc') {
         return rpc(request, response, engine);
     }
-    if (!url.pathname.startsWith('/st/')) {
+    if (url.pathname === '/') {
+        // The interface itself: pass through to the vendored server, which
+        // serves index.html from the bundle.
+        await waitForUpstream();
+        const upstreamResponse = await session.request('GET', '/', {});
+        response.writeHead(upstreamResponse.status, upstreamResponse.headers);
+        if (upstreamResponse.body) response.end(upstreamResponse.body);
+        else response.end();
+        return;
+    }
+    if (!url.pathname.startsWith('/st/') && !isAssetPath(url.pathname)) {
         throw new HostError('NOT_FOUND', 'Unknown endpoint.', 404);
     }
 
@@ -122,7 +208,7 @@ async function handle(request, response, { expected, session, getEngine, waitFor
     // The gateway answers before the vendored server has finished its first
     // copy of content, so a pass-through call waits for it instead of racing.
     await waitForUpstream();
-    const upstreamPath = url.pathname.slice('/st'.length) + url.search;
+    const upstreamPath = (url.pathname.startsWith('/st/') ? url.pathname.slice('/st'.length) : url.pathname) + url.search;
     const body = await readBody(request);
     const upstreamResponse = await session.request(request.method, upstreamPath, {
         headers: pickHeaders(request.headers),
@@ -132,6 +218,15 @@ async function handle(request, response, { expected, session, getEngine, waitFor
     response.writeHead(upstreamResponse.status, upstreamResponse.headers);
     if (upstreamResponse.body) response.end(upstreamResponse.body);
     else response.end();
+}
+
+/**
+ * Paths the interface requests directly at the origin: modules, styles, fonts,
+ * images, data files. They are forwarded verbatim, so the page sees exactly the
+ * paths the vendored server documents.
+ */
+function isAssetPath(pathname) {
+    return /^\/(scripts|css|img|fonts|webfonts|lib|vendor|locales|characters|backgrounds|User%20Avatars|User Avatars|assets|user|thumbnails|api)\b/.test(pathname);
 }
 
 function pickHeaders(headers) {
@@ -264,7 +359,8 @@ class UpstreamSession {
 
         const responseHeaders = {};
         response.headers.forEach((value, key) => {
-            if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(key)) {
+            if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection',
+                'set-cookie', 'x-frame-options', 'content-security-policy'].includes(key)) {
                 responseHeaders[key] = value;
             }
         });

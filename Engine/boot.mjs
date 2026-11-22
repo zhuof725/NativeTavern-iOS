@@ -5,6 +5,7 @@
 // then runs upstream's own public/script.js module graph on a minimal DOM so the
 // real world-info, macro and prompt-assembly code is what answers the app.
 import { mkdir, writeFile, rename, readFile, appendFile, copyFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -13,6 +14,7 @@ import { startLocalHost } from './host.mjs';
 import { createEngineApi } from './api.mjs';
 import { createGenerationApi } from './generation.mjs';
 import { createLibraryApi } from './library.mjs';
+import { createWebUiApi } from './webui.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -86,7 +88,16 @@ const upstreamReady = startUpstream(coreRoot, dataRoot, enginePort).catch((error
 
 // The gateway owns the upstream session (cookies + CSRF); generation needs it
 // to reach the vendored server, so the API is wired after the host exists.
-const host = await startLocalHost({ launchID, upstream, waitForUpstream: () => upstreamReady });
+const host = await startLocalHost({
+    launchID,
+    upstream,
+    waitForUpstream: () => upstreamReady,
+    // Entry document for the system browser (see webui.mjs).
+    shellPage: async () => (await readFile(path.join(here, 'webui-shell.html'), 'utf8'))
+        // The entry document needs the absolute origin; it is only known once
+        // the gateway is listening, so it is filled in at request time.
+        .replace('__TARGET__', upstream),
+});
 
 // Upstream may still be starting when the app fires its first call, so every
 // upstream-backed call waits for it rather than racing it.
@@ -146,10 +157,23 @@ const library = createLibraryApi({
     log: (message) => log('[library]', message),
 });
 
+// The web UI host: where the page lives and how the native shell drives it.
+const webui = createWebUiApi({
+    getCore: loadCore,
+    upstream,
+    // The gateway's per-launch token, used once to mint the browser session.
+    token: () => host.session.token,
+});
+
+// Its one method is answered before the core has finished loading, so the host
+// can present the page while the modules are still warming up.
+host.attachEarly(webui);
+
 const engine = createEngineApi({
     getCore: loadCore,
     generation,
     library,
+    webui,
     saveChat,
     upstreamPost,
     restorePromptOrder: (modules) => restorePromptOrderHook?.(modules),
@@ -285,3 +309,4 @@ async function pickFreePort() {
         });
     });
 }
+
