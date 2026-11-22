@@ -48,8 +48,11 @@ export function loadDomEnvironment({ url, coreRoot }) {
     const copy = [
         'localStorage', 'sessionStorage', 'HTMLElement', 'Element', 'Node', 'Event', 'CustomEvent',
         'MouseEvent', 'KeyboardEvent', 'DOMParser', 'FormData', 'Blob', 'File', 'FileReader',
-        'ResizeObserver', 'IntersectionObserver', 'MutationObserver', 'URL', 'Headers', 'Request',
-        'Response', 'TextEncoder', 'TextDecoder', 'HTMLCanvasElement', 'CSS', 'DragEvent',
+        'ResizeObserver', 'IntersectionObserver', 'MutationObserver', 'URL',
+        // Headers/Request/Response stay Node's: `WebAssembly.instantiateStreaming`
+        // rejects a Response created by another implementation's constructor,
+        // and the image codecs fetch their kernels through it.
+        'TextEncoder', 'TextDecoder', 'HTMLCanvasElement', 'CSS', 'DragEvent',
         'WheelEvent', 'FocusEvent', 'InputEvent', 'PointerEvent', 'TouchEvent', 'EventTarget',
         'DocumentFragment', 'Text', 'Comment', 'Range', 'Selection', 'ProgressEvent',
         'XMLSerializer', 'HTMLOptionElement', 'HTMLInputElement', 'HTMLSelectElement',
@@ -101,6 +104,35 @@ export function loadDomEnvironment({ url, coreRoot }) {
         define(name, constructor);
         try { window[name] = constructor; } catch { /* read-only on this DOM */ }
     }
+    // Selection state has to round-trip through the select element: upstream
+    // reads `$('#world_info').val()` after setting `selected` on options, and
+    // jQuery's getter gives up entirely when `selectedIndex` is -1. The headless
+    // DOM keeps the per-option flag but never updates the index, so the index is
+    // derived here from the options themselves.
+    const selectProto = window.HTMLSelectElement?.prototype;
+    if (selectProto) {
+        Object.defineProperty(selectProto, 'selectedIndex', {
+            configurable: true,
+            enumerable: true,
+            get() {
+                const options = this.options;
+                if (!options) return -1;
+                for (let index = 0; index < options.length; index += 1) {
+                    if (options[index].selected) return index;
+                }
+                return -1;
+            },
+            set(value) {
+                const options = this.options;
+                if (!options) return;
+                const target = Number(value);
+                for (let index = 0; index < options.length; index += 1) {
+                    options[index].selected = index === target;
+                }
+            },
+        });
+    }
+
     // Inert media APIs: no playback or capture happens in the engine.
     if (typeof g.URL.createObjectURL !== 'function') {
         define('URL', g.URL ?? window.URL);

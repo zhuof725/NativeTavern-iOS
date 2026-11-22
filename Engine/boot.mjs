@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { startLocalHost } from './host.mjs';
 import { createEngineApi } from './api.mjs';
 import { createGenerationApi } from './generation.mjs';
+import { createLibraryApi } from './library.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,7 +83,7 @@ const upstreamReady = startUpstream(coreRoot, dataRoot, enginePort).catch((error
 
 // The gateway owns the upstream session (cookies + CSRF); generation needs it
 // to reach the vendored server, so the API is wired after the host exists.
-const host = await startLocalHost({ launchID, upstream });
+const host = await startLocalHost({ launchID, upstream, waitForUpstream: () => upstreamReady });
 
 // Upstream may still be starting when the app fires its first call, so every
 // upstream-backed call waits for it rather than racing it.
@@ -134,9 +135,18 @@ const upstreamPost = async (requestPath, body) => {
     try { return JSON.parse(text); } catch { return text; }
 };
 
+const library = createLibraryApi({
+    getCore: loadCore,
+    session,
+    saveChat,
+    restorePromptOrder: (modules) => restorePromptOrderHook?.(modules),
+    log: (message) => console.log('[library]', message),
+});
+
 const engine = createEngineApi({
     getCore: loadCore,
     generation,
+    library,
     saveChat,
     upstreamPost,
     restorePromptOrder: (modules) => restorePromptOrderHook?.(modules),

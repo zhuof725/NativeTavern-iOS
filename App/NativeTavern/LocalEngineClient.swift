@@ -7,7 +7,7 @@ struct EngineEndpoint: Decodable {
     let token: String
 
     func validatedURL(expectedLaunchID: String) throws -> URL {
-        guard protocolVersion == 1, launchID == expectedLaunchID,
+        guard protocolVersion >= 1, launchID == expectedLaunchID,
               token.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               let parts = URLComponents(string: url),
               parts.scheme == "http", parts.host == "127.0.0.1",
@@ -61,33 +61,20 @@ actor LocalEngineClient {
     }
 
     func status() async throws -> EngineStatus {
-        struct Call: Encodable {
-            let id: String
-            let method = "engine.status"
-            let args: [String: String] = [:]
-        }
-        struct RemoteFailure: Decodable { let code: String; let message: String }
-        struct Reply: Decodable {
-            let id: String?
-            let result: EngineStatus?
-            let error: RemoteFailure?
-        }
-        let id = UUID().uuidString
-        var request = URLRequest(url: baseURL.appendingPathComponent("rpc"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var request = URLRequest(url: baseURL.appendingPathComponent("engine/status"))
+        request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(Call(id: id))
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw LocalEngineFailure("本地引擎没有返回 HTTP 响应。")
         }
-        let reply = try JSONDecoder().decode(Reply.self, from: data)
-        if let error = reply.error { throw LocalEngineFailure("\(error.code): \(error.message)") }
-        guard http.statusCode == 200, reply.id == id,
-              let result = reply.result, result.protocolVersion == 1 else {
+        guard http.statusCode == 200 else {
+            throw LocalEngineFailure("本地引擎状态接口返回 \(http.statusCode)。")
+        }
+        let status = try JSONDecoder().decode(EngineStatus.self, from: data)
+        guard status.protocolVersion >= 1, status.transportReady else {
             throw LocalEngineFailure("本地引擎响应与当前请求不匹配。")
         }
-        return result
+        return status
     }
 }

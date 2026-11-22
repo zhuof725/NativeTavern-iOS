@@ -33,7 +33,7 @@ export async function startCore({ upstream, coreRoot, log = () => {} }) {
     installToastr(window);
     globalThis.fixToastrForDialogs = () => {};
     installFetchXHR(window);
-    installLoopbackFetch({ upstream, window });
+    installLoopbackFetch({ upstream, window, coreRoot });
     installScriptExecution(publicDir, window);
 
     const classic = loadClassicScripts(publicDir, window);
@@ -57,8 +57,15 @@ export async function startCore({ upstream, coreRoot, log = () => {} }) {
         extensions: await import(`file://${path.join(publicDir, 'scripts/extensions.js')}`),
     };
 
-    await waitForSettings(core, log);
+    const appReady = await waitForSettings(core, log);
     await completeInit(core, modules, log);
+
+    // The page's own startup keeps running after settings are applied — model
+    // lists, personas, tokenizers, slash commands. Generating before it ends
+    // makes upstream wait on initialisation events that are still in flight,
+    // which can hang the request. The engine is only "ready" once the core
+    // itself says so.
+    await appReady;
 
     return { core, modules, window };
 }
@@ -72,6 +79,25 @@ export async function startCore({ upstream, coreRoot, log = () => {} }) {
  * for explicitly rather than assumed.
  */
 async function waitForSettings(core, log, timeoutMs = 180000) {
+    const appReady = new Promise((resolve) => {
+        const hook = setInterval(() => {
+            const eventSource = globalThis.SillyTavern?.getContext?.()?.eventSource;
+            if (!eventSource?.once) return;
+            clearInterval(hook);
+            eventSource.once('app_ready', () => {
+                log('core app ready');
+                resolve();
+            });
+        }, 100);
+        // A startup step can legitimately never finish in a headless runtime.
+        // The engine still has to come up, so this is a warning, not a failure.
+        setTimeout(() => {
+            clearInterval(hook);
+            log('WARNING: core app_ready was not observed in time');
+            resolve();
+        }, timeoutMs).unref?.();
+    });
+
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         const context = globalThis.SillyTavern?.getContext?.();
@@ -81,12 +107,13 @@ async function waitForSettings(core, log, timeoutMs = 180000) {
             const usernames = context.name1;
             if (usernames) {
                 log('core settings loaded');
-                return;
+                return appReady;
             }
         }
         await new Promise((resolve) => setTimeout(resolve, 200));
     }
     log('WARNING: core settings did not load in time');
+    return appReady;
 }
 
 /**
@@ -186,7 +213,48 @@ async function loadJQuery(window) {
     globalThis.$ = $;
     window.jQuery = $;
     window.$ = $;
+    installSelectedPseudoClass($, window);
     return $;
+}
+
+/**
+ * Teaches jQuery's `:selected` selector to work on this DOM.
+ *
+ * The core's own settings loader ends with `$('#chat_completion_source').trigger('change')`,
+ * and that handler reads `$(this).find(':selected').val()`. In happy-dom,
+ * `querySelectorAll` accepts `:selected` but matches nothing, so jQuery never
+ * falls back to its own selector engine and the handler receives `undefined`.
+ * Upstream then stores the literal string "undefined" as the chat completion
+ * source, which makes every generation request fail with a 400 — on a code path
+ * the app cannot avoid. Handling the selector here keeps upstream's code intact.
+ */
+function installSelectedPseudoClass($, window) {
+    const nativeFind = $.find;
+    if (!nativeFind || nativeFind.__ntSelected) return;
+
+    function findWithSelected(selector, context, results, seed) {
+        if (typeof selector === 'string' && selector.includes(':selected')) {
+            const base = selector.replace(/:selected/g, '').trim() || '*';
+            const scope = context?.querySelectorAll ? context : window.document;
+            try {
+                const found = [...scope.querySelectorAll(base)].filter((node) => node.selected === true);
+                if (results) {
+                    results.push(...found);
+                    return results;
+                }
+                return found;
+            } catch {
+                // Unusual compound selector: let jQuery decide.
+            }
+        }
+        return nativeFind.call(this, selector, context, results, seed);
+    }
+
+    // `jQuery.find` carries helper methods (attr, matchesSelector…) used by
+    // `.val()`, so they have to survive the replacement.
+    for (const key of Object.keys(nativeFind)) findWithSelected[key] = nativeFind[key];
+    findWithSelected.__ntSelected = true;
+    $.find = findWithSelected;
 }
 
 function installToastr(window) {

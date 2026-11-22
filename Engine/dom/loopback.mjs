@@ -4,7 +4,11 @@
 // cookie rides along automatically. Here there is no browser: the core runs
 // inside the app, so this shim supplies both the origin and a session jar. That
 // keeps every upstream endpoint, payload and CSRF rule exactly as shipped.
-export function installLoopbackFetch({ upstream, window }) {
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export function installLoopbackFetch({ upstream, window, coreRoot }) {
     const native = globalThis.fetch;
     if (native.__loopbackInstalled) return native;
 
@@ -56,21 +60,47 @@ export function installLoopbackFetch({ upstream, window }) {
             const location = response.headers.get('location');
             if (location) return send(new URL(location, url).href, init, true);
         }
+        if (response.status >= 400 && globalThis.process?.env?.NT_DEBUG_FETCH) {
+            // The upstream body says WHY a call failed; the status alone doesn't.
+            response.clone().text().then((text) => {
+                console.log(`[fetch] ${init?.method ?? 'GET'} ${url} -> ${response.status}: ${text.slice(0, 500)}`);
+            }).catch(() => {});
+        }
         return response;
     };
 
-    const shim = (input, init = {}) => {
+    const shim = async (input, init = {}) => {
         const url = resolveURL(input);
         const target = new URL(url);
+        // Image codecs (Jimp's WebAssembly decoders) load their kernels from
+        // `new URL('./codec/x.wasm', import.meta.url)`. A browser would fetch
+        // that file; here it is already on disk. Serving it from the file
+        // system is what lets avatar and card image processing work.
+        if (target.protocol === 'file:') {
+            const filePath = fileURLToPath(target);
+            if (coreRoot && !filePath.startsWith(coreRoot + path.sep)) {
+                return new Response('{"error":"file is outside the engine"}', { status: 403 });
+            }
+            try {
+                const data = await readFile(filePath);
+                const type = filePath.endsWith('.wasm') ? 'application/wasm'
+                    : filePath.endsWith('.png') ? 'image/png'
+                        : filePath.endsWith('.jpg') || filePath.endsWith('.jpeg') ? 'image/jpeg'
+                            : 'application/octet-stream';
+                return new Response(data, { status: 200, headers: { 'content-type': type } });
+            } catch {
+                return new Response('not found', { status: 404 });
+            }
+        }
         // The core probes several external services on startup (Horde status and
         // model lists, OpenRouter auth…). Those are the web UI's conveniences and
         // their failures surface as unhandled socket errors. The engine answers
         // them as "unavailable" instead of reaching out to third parties.
         if (target.origin !== origin) {
-            return Promise.resolve(new Response('{"error":"external requests are disabled in the app"}', {
+            return new Response('{"error":"external requests are disabled in the app"}', {
                 status: 503,
                 headers: { 'content-type': 'application/json' },
-            }));
+            });
         }
         return send(url, init, false);
     };

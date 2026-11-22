@@ -1,111 +1,172 @@
 import Foundation
 import Combine
 
-/// Chat state for the native UI.
-///
-/// Every semantic decision is made by the original SillyTavern core inside the
-/// app: world info, macros and prompt assembly are its own code, and the reply
-/// on screen is what its generation path returned. This object carries messages
-/// in and out.
+/// One open conversation. The core owns the chat; this object mirrors it for
+/// display and forwards every action to the core's own operations.
 @MainActor
 final class ChatStore: ObservableObject {
-    struct Message: Identifiable, Equatable {
-        let id = UUID()
-        let isUser: Bool
-        var text: String
-    }
-
-    @Published private(set) var messages: [Message] = []
-    @Published var characterName: String = "Seraphina"
+    @Published private(set) var messages: [ChatMessage] = []
+    @Published private(set) var fileName: String = ""
+    @Published private(set) var characterName: String = ""
+    @Published private(set) var userName: String = "User"
+    @Published private(set) var busy = false
     @Published var draft: String = ""
-    @Published private(set) var status: Status = .idle
-    @Published private(set) var lastPrompt: BuiltPrompt?
-    @Published private(set) var worldInfo: BuiltPrompt.WorldInfoSlice?
+    @Published var errorMessage: String?
 
-    enum Status: Equatable {
-        case idle
-        case working(String)
-        case failed(String)
+    let avatar: String
+    private let client: LocalEngineClient
+
+    init(client: LocalEngineClient, avatar: String) {
+        self.client = client
+        self.avatar = avatar
     }
 
-    private let engine: EmbeddedEngine
-
-    init(engine: EmbeddedEngine) {
-        self.engine = engine
+    var canSend: Bool {
+        !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var isBusy: Bool {
-        if case .working = status { return true }
-        return false
-    }
-
-    /// Loads the chat into the core and builds the prompt it would send.
-    func refresh() async {
-        guard let client = engine.client else {
-            status = .failed("本地引擎尚未就绪。")
-            return
-        }
-        status = .working("正在组装提示词…")
+    func open(fileName: String?) async {
+        busy = true
+        errorMessage = nil
         do {
-            try await syncChat(client)
-            lastPrompt = try await client.call(
-                "prompt.build",
-                args: ["maxContext": .number(8192)],
-                as: BuiltPrompt.self
+            let snapshot = try await client.call(
+                "chat.open",
+                args: [
+                    "avatar": .string(avatar),
+                    "fileName": .string(fileName ?? ""),
+                ],
+                as: ChatSnapshot.self
             )
-            worldInfo = lastPrompt?.worldInfo
-            status = .idle
+            apply(snapshot)
         } catch {
-            status = .failed(error.localizedDescription)
+            errorMessage = error.localizedDescription
         }
+        busy = false
     }
 
-    /// Sends the draft and asks the original core for a reply.
+    func startNew() async {
+        busy = true
+        errorMessage = nil
+        do {
+            let snapshot = try await client.call(
+                "chat.new",
+                args: ["avatar": .string(avatar)],
+                as: ChatSnapshot.self
+            )
+            apply(snapshot)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        busy = false
+    }
+
     func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isBusy else { return }
+        guard !text.isEmpty, !busy else { return }
         draft = ""
-        messages.append(Message(isUser: true, text: text))
-
-        guard let client = engine.client else {
-            status = .failed("本地引擎尚未就绪。")
-            return
-        }
-        status = .working("模型生成中…")
+        errorMessage = nil
+        // Show the user's turn immediately; the core appends the same text
+        // before generating, and the reply below replaces this mirror.
+        messages.append(ChatMessage(
+            id: messages.count,
+            name: userName,
+            isUser: true,
+            isSystem: false,
+            text: text,
+            swipes: [],
+            swipeId: 0,
+            sendDate: ""
+        ))
+        busy = true
         do {
-            try await syncChat(client)
-            let reply: GenerationReply = try await client.call(
-                "generate.reply",
-                args: [:],
-                as: GenerationReply.self
+            let reply = try await client.call(
+                "chat.send",
+                args: ["text": .string(text)],
+                as: SendReply.self
             )
-            for message in reply.messages where !message.content.isEmpty {
-                messages.append(Message(isUser: message.role == "user", text: message.content))
+            messages = reply.messages
+            if let error = reply.error, !error.isEmpty {
+                errorMessage = error
             }
-            lastPrompt = nil
-            status = .idle
+            if let name = reply.characterName, !name.isEmpty { characterName = name }
+            if let name = reply.userName, !name.isEmpty { userName = name }
         } catch {
-            status = .failed(error.localizedDescription)
+            errorMessage = error.localizedDescription
         }
+        busy = false
     }
 
-    /// The chat lives in the core; the UI's messages are pushed into it before
-    /// each call so both sides agree on what the conversation is.
-    private func syncChat(_ client: LocalEngineClient) async throws {
-        struct Loaded: Decodable { let length: Int }
-        _ = try await client.call(
-            "chat.load",
-            args: [
-                "characterName": .string(characterName),
-                "messages": .array(messages.map { message in
-                    .object([
-                        "name": .string(message.isUser ? "User" : characterName),
-                        "is_user": .bool(message.isUser),
-                        "mes": .string(message.text),
-                    ])
-                }),
-            ],
-            as: Loaded.self
-        )
+    func regenerateLast() async {
+        guard !busy, let last = messages.last, !last.isUser else { return }
+        await swipe(messageId: last.id, direction: "right")
+    }
+
+    func swipe(messageId: Int, direction: String) async {
+        guard !busy else { return }
+        busy = true
+        errorMessage = nil
+        do {
+            let reply = try await client.call(
+                "message.swipe",
+                args: ["id": .number(Double(messageId)), "direction": .string(direction)],
+                as: SendReply.self
+            )
+            messages = reply.messages
+            if let error = reply.error, !error.isEmpty {
+                errorMessage = error
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        busy = false
+    }
+
+    func edit(messageId: Int, text: String) async {
+        busy = true
+        errorMessage = nil
+        do {
+            let snapshot = try await client.call(
+                "message.edit",
+                args: ["id": .number(Double(messageId)), "text": .string(text)],
+                as: ChatSnapshot.self
+            )
+            apply(snapshot)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        busy = false
+    }
+
+    func delete(messageId: Int) async {
+        busy = true
+        errorMessage = nil
+        do {
+            let snapshot = try await client.call(
+                "message.delete",
+                args: ["id": .number(Double(messageId))],
+                as: ChatSnapshot.self
+            )
+            apply(snapshot)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        busy = false
+    }
+
+    func stop() async {
+        do {
+            struct Stopped: Decodable { let stopped: Bool }
+            _ = try await client.call("generate.stop", as: Stopped.self)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        busy = false
+    }
+
+    private func apply(_ snapshot: ChatSnapshot) {
+        messages = snapshot.messages
+        fileName = snapshot.fileName
+        characterName = snapshot.characterName
+        userName = snapshot.userName
     }
 }

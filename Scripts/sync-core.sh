@@ -34,9 +34,17 @@ cp -R "$WORK/upstream/default" "$CORE/default"
 
 # Files a phone never serves or executes.
 rm -rf "$CORE/public/webfonts" "$CORE/public/sounds" "$CORE/public/css" \
-       "$CORE/public/img" "$CORE/src/electron" "$CORE/src/tokenizers" \
+       "$CORE/src/electron" "$CORE/src/tokenizers" \
        "$CORE/default/content/backgrounds" "$CORE/default/content/Seraphina"
 mkdir -p "$CORE/default/content/backgrounds"
+
+# `public/img` is removed except for the default character avatar. Upstream's
+# /api/characters/create writes every new card from DEFAULT_AVATAR_PATH
+# (public/img/ai4.png); without it, creating a character fails on the device.
+mkdir -p "$CORE/public/img"
+if [ -f "$ROOT/Engine/default-avatar.png" ]; then
+    cp "$ROOT/Engine/default-avatar.png" "$CORE/public/img/ai4.png"
+fi
 
 echo "Applying engine patches"
 sh "$ROOT/Scripts/patch-core.sh" "$CORE"

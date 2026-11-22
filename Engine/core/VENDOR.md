@@ -28,9 +28,11 @@ file no longer matches the expected shape.
 
 ## Removed for size
 
-`public/webfonts`, `public/sounds`, `public/css`, `public/img`,
+`public/webfonts`, `public/sounds`, `public/css`, most of `public/img`,
 `src/electron`, `src/tokenizers` (16 MB of model files the app does not load),
-and the demo character/background content. Nothing else is removed.
+and the demo character/background content. `public/img/ai4.png` is kept because
+upstream's character creation writes every new card from that default avatar.
+Nothing else is removed.
 
 ## Dependencies
 

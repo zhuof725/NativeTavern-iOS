@@ -25,7 +25,7 @@ export class BadRequest extends Error {
  * @param {object} deps
  * @param {() => Promise<object>} deps.getCore lazily returns the started core
  */
-export function createEngineApi({ getCore, generation, saveChat, upstreamPost, restorePromptOrder }) {
+export function createEngineApi({ getCore, generation, library, saveChat, upstreamPost, restorePromptOrder }) {
     const methods = new Map();
 
     const core = async () => {
@@ -269,6 +269,14 @@ export function createEngineApi({ getCore, generation, saveChat, upstreamPost, r
     if (generation) {
         for (const name of generation.methods) {
             methods.set(name, (args) => generation.call(name, args));
+        }
+    }
+
+    // Characters, chats, world info, presets and prompt order live in their own
+    // module; they are merged into the same callable surface.
+    if (library) {
+        for (const name of library.methods) {
+            methods.set(name, (args) => library.call(name, args));
         }
     }
 

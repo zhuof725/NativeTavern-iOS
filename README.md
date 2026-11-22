@@ -1,7 +1,8 @@
 # Native Tavern：SwiftUI + 内置原版酒馆核心
 
-状态：**原版 SillyTavern 核心已在 App 内运行**，并已通过 GitHub Actions 编译打包成 IPA。
-世界书、宏、提示词组装、生成请求全部使用上游原始代码。
+状态：**原版 SillyTavern 核心已在 App 内运行，原生界面覆盖酒馆的日常功能**。
+角色、聊天、世界书、预设与提示词顺序都由 SwiftUI 驱动；世界书扫描、宏展开、
+提示词组装、生成请求和聊天文件读写全部使用上游原始代码。
 
 ## 最新构建
 
@@ -52,7 +53,13 @@ SwiftUI → URLSession → 127.0.0.1/engine/rpc → 原版模块
 | `chat.load` | 写入并打开聊天 | 上游聊天端点 + `getChat()` |
 | `prompt.build` | 组装最终提示词 | `openai.js` 的 `prepareOpenAIMessages` |
 | `settings.get/update/setSecret` | 模型与参数设置 | 上游设置/密钥接口 |
-| `generate.reply` | 调用模型并取回回复 | `script.js` 的 `Generate()` |
+| `settings.snapshot` | 原生设置页的完整快照 | 核心的活动设置对象 |
+| `generate.reply` / `chat.send` | 调用模型并取回回复 | `script.js` 的 `Generate()` |
+| `character.list/get/create/edit/delete/import/select` | 角色库 | 上游角色端点 + 角色卡解析器 |
+| `chat.list/read/open/new/delete/rename/save` | 聊天记录 | 上游聊天端点 + `getChat()` / `doNewChat()` |
+| `message.edit/delete/swipe` | 消息操作与重新生成 | 核心聊天对象 + `Generate('swipe')` |
+| `preset.list/apply` | 对话预设 | 上游预设文件与 `settingsToUpdate` |
+| `prompt.list/toggle` | 提示词顺序 | `PromptManager` 自己的顺序表 |
 
 `prompt.build` 从核心**当前打开的聊天**组装提示词，不再接受一份独立的消息数组——
 两份副本一定会漂移。
@@ -89,13 +96,22 @@ npm test     # 10 项，本地与 GitHub macOS/Node 24 均通过
 - **生成**：用本地 OpenAI 兼容模拟服务验证完整链路。请求中的消息由上游 `openai.js` 组装，
   包含角色卡字段、世界书注入与聊天历史；回复经上游路径写回并返回。
 
+## 原生界面覆盖
+
+| 区域 | 能力 |
+|---|---|
+| 角色 | 列表、搜索、新建、编辑、删除、导入 PNG/JSON/CHARX、更换头像 |
+| 聊天 | 聊天列表、新建/删除/重命名、发送、停止、重新生成、左右滑动、编辑与删除消息 |
+| 世界书 | 列表、启用/停用、删除、条目增删改（关键词、常驻、顺序、深度、概率…） |
+| 预设 | 应用对话预设、采样参数、提示词顺序开关、最终提示词检查 |
+| 设置 | 多家模型服务、API 密钥、用户名称、人设、引擎状态与日志 |
+
 ## 还没完成
 
 1. **真机验收**：已完成云端编译与归档，**未在 iPhone 上运行验证**。这是当前最大的未知。
-2. **模型设置界面**：只覆盖 OpenAI 兼容端点，其他供应商需补 UI。
-3. **角色卡导入**：解析代码随核心加载，导入界面未做。
-4. **世界书/预设管理界面**：数据层可用，SwiftUI 界面未做。
-5. **体积**：105 MiB 中仍有相当部分来自上游依赖树；`Scripts/trim-core.sh` 记录了已裁剪项。
+2. **群聊**：核心的群聊模块已加载，原生界面尚未接入。
+3. **扩展/正则/TTS/画图**：这些属于酒馆的扩展生态，目前只在核心内可用，没有原生入口。
+4. **体积**：105 MiB 中仍有相当部分来自上游依赖树；`Scripts/trim-core.sh` 记录了已裁剪项。
 
 ## 构建
 

@@ -24,7 +24,7 @@ class HostError extends Error {
  * @param {string} options.launchID per-launch UUID supplied by the app
  * @param {string} options.upstream base URL of the upstream SillyTavern server
  */
-export async function startLocalHost({ launchID, upstream }) {
+export async function startLocalHost({ launchID, upstream, waitForUpstream = async () => {} }) {
     // The engine API is attached after listen: it depends on this host's session.
     let engine = null;
     if (typeof launchID !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(launchID)) {
@@ -39,7 +39,15 @@ export async function startLocalHost({ launchID, upstream }) {
     const session = new UpstreamSession(upstream);
 
     const server = http.createServer((request, response) => {
-        handle(request, response, { expected, session, getEngine: () => engine }).catch((error) => {
+        handle(request, response, { expected, session, getEngine: () => engine, waitForUpstream }).catch((error) => {
+            // A 500 here is otherwise silent: log the stack so the engine log
+            // explains which call failed and why.
+            if (!(error instanceof HostError)) {
+                console.log('[host] request failed:', error?.stack ?? error,
+                    '| cause:', error?.cause?.code ?? error?.cause?.message ?? 'none',
+                    '| fetch:', globalThis.fetch?.name, !!globalThis.fetch?.__loopbackInstalled,
+                    '| keys:', Object.keys(error ?? {}).join(','));
+            }
             const known = error instanceof HostError;
             if (!response.headersSent) {
                 response.writeHead(known ? error.status : 500, { 'content-type': 'application/json; charset=utf-8' });
@@ -81,7 +89,7 @@ export async function startLocalHost({ launchID, upstream }) {
     };
 }
 
-async function handle(request, response, { expected, session, getEngine }) {
+async function handle(request, response, { expected, session, getEngine, waitForUpstream }) {
     const engine = getEngine();
     if (request.headers.origin) {
         throw new HostError('ORIGIN_DENIED', 'Browser origins are not accepted.', 403);
@@ -111,6 +119,9 @@ async function handle(request, response, { expected, session, getEngine }) {
     }
 
     // /st/<upstream path> — pass through to the real SillyTavern server.
+    // The gateway answers before the vendored server has finished its first
+    // copy of content, so a pass-through call waits for it instead of racing.
+    await waitForUpstream();
     const upstreamPath = url.pathname.slice('/st'.length) + url.search;
     const body = await readBody(request);
     const upstreamResponse = await session.request(request.method, upstreamPath, {
