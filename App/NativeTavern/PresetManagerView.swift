@@ -12,7 +12,7 @@ struct PresetManagerView: View {
     @State private var newName = ""
     @State private var pendingDelete: PresetRef?
 
-    struct PresetKind: Identifiable, Hashable {
+    struct PresetKind: Decodable, Identifiable, Hashable {
         let kind: String
         let names: [String]
         var id: String { kind }
