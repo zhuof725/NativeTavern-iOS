@@ -1,7 +1,18 @@
 # Native Tavern：SwiftUI + 内置原版酒馆核心
 
-状态：**原版 SillyTavern 核心已在 App 内运行**，并可通过配置的模型 API 生成回复。
+状态：**原版 SillyTavern 核心已在 App 内运行**，并已通过 GitHub Actions 编译打包成 IPA。
 世界书、宏、提示词组装、生成请求全部使用上游原始代码。
+
+## 最新构建
+
+| 项 | 值 |
+|---|---|
+| IPA | `NativeTavern-unsigned.ipa`，105 MiB |
+| 提交 | `30bda2c` |
+| 构建记录 | [GitHub Actions](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/44983614489) |
+| 签名 | 未签名，安装前需自签 |
+| 设备 | iPhone ARM64，iOS 17+ |
+| 验证 | 结构、SHA256 校验通过；**未在真机运行** |
 
 ## 最关键的架构决定：不重写核心
 
@@ -46,41 +57,45 @@ SwiftUI → URLSession → 127.0.0.1/engine/rpc → 原版模块
 `prompt.build` 从核心**当前打开的聊天**组装提示词，不再接受一份独立的消息数组——
 两份副本一定会漂移。
 
-## 与原版的差异（全部记录在 `Scripts/patch-core.sh`）
+## 与原版的差异
 
-上游源码只改两处，且都是「不要在手机上跑打包器」：
+上游源码只改两处，都在 `Scripts/patch-core.sh` 中，且都是「不要在手机上跑打包器」：
 
 | 文件 | 改动 | 原因 |
 |---|---|---|
 | `src/middleware/webpack-serve.js` | 存在 `public/lib.bundle.js` 时跳过 Webpack；`webpack` 改为动态导入 | 手机冷启动不应运行 bundler |
 | `webpack.config.js` | 不再静态导入 `webpack`（仅用于缓存键） | 同上 |
 
-引擎侧另外做了三件「页面才有的事」，都写在 `Engine/` 里而非改上游：
+引擎侧另做了几件「页面才有的事」，都写在 `Engine/` 里而不是改上游：
 
-1. **最小 DOM**（`dom/environment.mjs`）：用 happy-dom 解析 `index.html`，补上页面里存在但实现缺失的构造器。
-2. **脚本执行**（`dom/classic.mjs`）：把核心插入的 `<script>` 替换为直接执行模块并派发 `load`，与浏览器行为一致。
-3. **回环请求**（`dom/loopback.mjs`）：把页面相对路径指向内置后端，并维护会话与 CSRF；外部网络探测直接返回 503，不访问第三方。
+1. **最小 DOM**（`dom/environment.mjs`）：用 happy-dom 解析 `index.html`，补上页面里存在但 Node 缺失的构造器，并把文档标记为 `complete`。
+2. **脚本执行**（`dom/classic.mjs`）：核心插入 `<script>` 时直接执行对应模块并派发 `load`，与浏览器行为一致。
+3. **回环请求**（`dom/loopback.mjs`）：把页面相对路径指向内置后端并维护会话与 CSRF；对外部探测直接返回 503，不访问第三方。
+4. **模块解析**（`dom/loader.mjs`）：把 `/scripts/xxx.js` 这类页面路径映射到实际文件，把 `../lib.js` 映射到预构建 bundle。
 
-页面扩展（TTS、画廊、翻译等）已从随包的核心中移除：它们是需要页面 DOM 的网页插件，核心不依赖它们。
+两处无头环境特有的初始化问题也已显式处理，不靠运气：
+
+- **提示词顺序**：设置重载后，管理器会拿到用不同哨兵 id 记录的 prompt order，导致聊天历史被静默丢弃。`restorePromptOrder()` 在重载后恢复。
+- **页面扩展**：随包核心只保留 `regex`（其 `engine.js` 被核心直接导入）。其余扩展靠注入 `<script>` 激活，无浏览器时永远不会完成，会卡住首次加载。
 
 ## 已验证
 
 ```sh
-npm test     # 10 项，全部通过
+npm test     # 10 项，本地与 GitHub macOS/Node 24 均通过
 ```
 
 - **传输层**：握手、令牌校验、拒绝浏览器来源、RPC 错误码。
 - **启动**：真实启动原版后端与前端核心，写入世界书 → 激活 → 关键词扫描 → 进入提示词。
-- **生成**：用本地模拟模型验证完整链路。引擎调用模型时发送的消息由上游 `openai.js` 组装，
-  包含角色卡字段、世界书注入与聊天历史，回复经上游路径写回并返回。
+- **生成**：用本地 OpenAI 兼容模拟服务验证完整链路。请求中的消息由上游 `openai.js` 组装，
+  包含角色卡字段、世界书注入与聊天历史；回复经上游路径写回并返回。
 
 ## 还没完成
 
-1. **模型设置界面**：已可用（`ModelSettingsView`），但只覆盖 OpenAI 兼容端点。
-2. **角色卡导入**：解析代码已随核心加载，导入 UI 未做。
-3. **世界书/预设管理界面**：数据层可用，SwiftUI 界面未做。
-4. **依赖裁剪**：`Engine/core/node_modules` 是上游完整依赖树。
-5. **真机验收**：云端已完成 Xcode 编译与归档，未在 iPhone 上运行验证。
+1. **真机验收**：已完成云端编译与归档，**未在 iPhone 上运行验证**。这是当前最大的未知。
+2. **模型设置界面**：只覆盖 OpenAI 兼容端点，其他供应商需补 UI。
+3. **角色卡导入**：解析代码随核心加载，导入界面未做。
+4. **世界书/预设管理界面**：数据层可用，SwiftUI 界面未做。
+5. **体积**：105 MiB 中仍有相当部分来自上游依赖树；`Scripts/trim-core.sh` 记录了已裁剪项。
 
 ## 构建
 
@@ -90,11 +105,14 @@ npm test     # 10 项，全部通过
 gh workflow run build-ios.yml -f bundle_id=com.example.nativetavern
 ```
 
+工作流依次：安装原版依赖 → 安装引擎脚手架依赖 → 裁剪 → 预构建 `lib.bundle.js` → 运行测试 →
+Xcode 归档 → 打包未签名 IPA。任何一步失败都不会产出 IPA。
+
 本地 macOS：
 
 ```sh
 bash Scripts/fetch-runtime.sh
-(cd Engine/core && npm install --omit=dev)
+bash Scripts/install-engine-deps.sh
 bash Scripts/build-lib-bundle.sh
 xcodegen generate
 xcodebuild -project NativeTavern.xcodeproj -scheme NativeTavern \
@@ -118,4 +136,4 @@ bash Scripts/sync-core.sh <commit>
 ```
 
 会重新 vendor 源码、安装该版本声明的依赖、重新打补丁、重建 bundle，然后 `npm test` 应全绿。
-补丁锚点找不到时 `patch-core.sh` 会直接报错，不会静默产出错误代码。
+补丁锚点找不到时 `patch-core.sh` 直接报错，不会静默产出错误代码。
