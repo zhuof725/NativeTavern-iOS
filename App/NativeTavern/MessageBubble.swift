@@ -154,10 +154,7 @@ struct MessageBubble: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Text(MessageRenderer.render(message.text, narration: .secondary))
-                .font(.system(size: 15.5))
-                .lineSpacing(4)
-                .textSelection(.enabled)
+            MessageContent(text: message.text, client: avatar)
                 .padding(.horizontal, message.isUser ? 12 : 0)
                 .padding(.vertical, message.isUser ? 8 : 0)
                 .background {

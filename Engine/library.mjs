@@ -1035,6 +1035,67 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         return { kind, name };
     });
 
+    /**
+     * Imports a preset file exported from a tavern install.
+     *
+     * Two shapes exist: a plain preset (the settings form's own export) and the
+     * "full" export, which also carries `prompts` and `prompt_order`. Both are
+     * accepted; the full one additionally replaces the prompt manager's content,
+     * which is what upstream's import does.
+     */
+    define('preset.import', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const kind = requireString(args, 'kind');
+        const raw = requireString(args, 'data');
+        const spec = PRESET_KINDS[kind];
+        if (!spec) throw new LibraryError(`Unknown preset kind ${kind}`);
+
+        let incoming;
+        try {
+            incoming = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (error) {
+            throw new LibraryError(`预设文件不是合法 JSON：${error.message}`);
+        }
+        if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+            throw new LibraryError('预设文件内容不是一个对象。');
+        }
+
+        const name = String(args.name ?? incoming.name ?? incoming.preset_settings_name ?? '').trim();
+        if (!name) throw new LibraryError('导入的预设没有名称。');
+
+        // Full exports nest the preset under `preset` and carry the prompt list.
+        const preset = incoming.preset && typeof incoming.preset === 'object' ? incoming.preset : incoming;
+        const clean = { ...preset };
+        delete clean.prompts;
+        delete clean.prompt_order;
+        delete clean.preset;
+
+        await postJson('/api/presets/save', { name, apiId: spec.apiId, preset: clean });
+
+        if (Array.isArray(incoming.prompts) && incoming.prompts.length) {
+            const settings = await readSettingsFile();
+            const manager = modules.openai.promptManager;
+            const dummyId = manager?.configuration?.promptOrder?.dummyId;
+            const order = Array.isArray(incoming.prompt_order) && incoming.prompt_order.length
+                ? incoming.prompt_order
+                : null;
+            if (settings.oai_settings) {
+                settings.oai_settings.prompts = incoming.prompts;
+                if (order) {
+                    settings.oai_settings.prompt_order = [{ character_id: dummyId, order: order[0]?.order ?? order }];
+                }
+            }
+            await postJson('/api/settings/save', settings);
+            await api.getSettings();
+            restorePromptOrder?.(modules);
+        } else {
+            await api.getSettings();
+            restorePromptOrder?.(modules);
+        }
+
+        return { kind, name, prompts: Array.isArray(incoming.prompts) ? incoming.prompts.length : 0 };
+    });
+
     define('preset.delete', async (args) => {
         const { core: api, modules } = await coreBundle();
         const kind = requireString(args, 'kind');

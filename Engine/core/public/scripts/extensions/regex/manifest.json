@@ -5,7 +5,10 @@
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "SillyTavern",
+    "author": "kingbri",
     "version": "1.0.0",
-    "auto_update": false
+    "homePage": "https://github.com/SillyTavern/SillyTavern",
+    "hooks": {
+        "activate": "init"
+    }
 }

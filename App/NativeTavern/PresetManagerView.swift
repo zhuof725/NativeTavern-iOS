@@ -11,6 +11,8 @@ struct PresetManagerView: View {
     @State private var creating = false
     @State private var newName = ""
     @State private var pendingDelete: PresetRef?
+    @State private var importKind = "openai"
+    @State private var notice: String?
 
     struct PresetKind: Decodable, Identifiable, Hashable {
         let kind: String
@@ -111,9 +113,24 @@ struct PresetManagerView: View {
                 ProgressView()
             }
         }
+        .alert("导入结果", isPresented: Binding(
+            get: { notice != nil },
+            set: { if !$0 { notice = nil } }
+        )) {
+            Button("好", role: .cancel) { notice = nil }
+        } message: {
+            Text(notice ?? "")
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button {
+                        importKind = "openai"
+                        pickPresetFile()
+                    } label: {
+                        Label("导入预设文件", systemImage: "square.and.arrow.down")
+                    }
+                    Divider()
                     Button {
                         newName = "我的预设"
                         creating = true
@@ -149,6 +166,43 @@ struct PresetManagerView: View {
             Text(pendingDelete?.name ?? "")
         }
         .task { await load() }
+    }
+
+    /// The picker is presented on the window (see DocumentPickerPresenter).
+    private func pickPresetFile() {
+        DocumentPickerPresenter.present(
+            configuration: .init(types: ImportTypes.presets, allowsMultiple: false),
+            onPick: { files in
+                guard let file = files.first else { return }
+                Task { await importFile(file, kind: importKind) }
+            },
+            onFailure: { message in
+                app.errorMessage = message
+            }
+        )
+    }
+
+    private func importFile(_ file: PickedFile, kind: String) async {
+        guard let client = app.client else { return }
+        guard let text = String(data: file.data, encoding: .utf8) else {
+            app.errorMessage = "预设文件不是 UTF-8 文本。"
+            return
+        }
+        do {
+            struct Imported: Decodable { let name: String; let prompts: Int }
+            let imported = try await client.call(
+                "preset.import",
+                args: ["kind": .string(kind), "data": .string(text)],
+                as: Imported.self
+            )
+            await load()
+            app.errorMessage = nil
+            notice = imported.prompts > 0
+                ? "已导入 \(imported.name)，并覆盖了 \(imported.prompts) 条提示词。"
+                : "已导入 \(imported.name)。"
+        } catch {
+            app.errorMessage = "导入失败：\(error.localizedDescription)"
+        }
     }
 
     private func load() async {

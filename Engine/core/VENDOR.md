@@ -39,14 +39,16 @@ Nothing else is removed.
 `Engine/core/node_modules` holds upstream's production dependency tree, copied
 by `Scripts/sync-core.sh`. It is not committed; it is regenerated.
 
-## Page extensions removed
+## Page extensions
 
-`public/scripts/extensions/` keeps only `regex/` (whose `engine.js` the core
-imports directly) and `shared.js`. Everything else there is a web-frontend
-plugin: each one activates by injecting `<script>`/`<link>` tags and expecting a
-browser to load them. The engine runs the core headlessly, so those activations
-never complete and the first load stalls.
+`public/scripts/extensions/` ships upstream's own extensions unchanged:
+`assets`, `attachments` (Data Bank), `caption`, `connection-manager`,
+`expressions`, `gallery`, `memory` (Summarize), `quick-reply`, `regex`,
+`stable-diffusion`, `token-counter`, `translate`, `tts`, `vectors`.
 
-They are not part of the chat core: world info, macros and prompt assembly do
-not import them. Removing them is a deployment decision, not a behaviour change,
-and it is documented here so it is not mistaken for upstream content.
+They activate by inserting `<script type="module">` and `<link>` elements, which
+a headless run would never settle. `Engine/dom/classic.mjs` executes the module
+and dispatches the load event the core waits for, exactly as a browser does, so
+the extension code runs unmodified. Big binary payloads that only the browser
+builds need (the ONNX runtime wasm) stay trimmed by `Scripts/trim-core.sh`; a
+feature that requires them reports that it is unavailable instead of hanging.

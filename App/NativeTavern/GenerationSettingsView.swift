@@ -50,10 +50,16 @@ struct GenerationSettingsView: View {
                 }
                 HStack(spacing: 18) {
                     Button {
-                        Task { await app.refreshPresets() }
+                        Task { await app.refreshPresets(); await loadPresets() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
+                    Button {
+                        importPreset()
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .accessibilityLabel("导入预设")
                     NavigationLink {
                         PresetManagerView(app: app)
                     } label: {
@@ -191,6 +197,37 @@ struct GenerationSettingsView: View {
         case "min": return "极低"
         case "max": return "最高"
         default: return value
+        }
+    }
+
+    private func importPreset() {
+        DocumentPickerPresenter.present(
+            configuration: .init(types: ImportTypes.presets, allowsMultiple: false),
+            onPick: { files in
+                guard let file = files.first else { return }
+                Task { await importFile(file) }
+            },
+            onFailure: { message in notice = message }
+        )
+    }
+
+    private func importFile(_ file: PickedFile) async {
+        guard let client = app.client, let text = String(data: file.data, encoding: .utf8) else { return }
+        do {
+            struct Imported: Decodable { let name: String; let prompts: Int }
+            let imported = try await client.call(
+                "preset.import",
+                args: ["kind": .string("openai"), "data": .string(text)],
+                as: Imported.self
+            )
+            await app.refreshPresets()
+            await loadPresets()
+            selectedPreset = imported.name
+            notice = imported.prompts > 0
+                ? "已导入 \(imported.name)（含 \(imported.prompts) 条提示词），已选中。"
+                : "已导入 \(imported.name)，已选中。"
+        } catch {
+            notice = "导入失败：\(error.localizedDescription)"
         }
     }
 

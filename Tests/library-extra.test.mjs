@@ -139,6 +139,25 @@ try {
     const afterProbe = await call('chat.messages');
     console.log('ok settings screens', 'messages after probe:', afterProbe.messages.length);
 
+    // Importing a preset file: plain, and the full export with prompts.
+    const presetFile = JSON.stringify({
+        name: 'Imported Preset',
+        temperature: 0.75,
+        openai_max_tokens: 512,
+        prompts: [
+            { identifier: 'main', name: 'Main Prompt', system_prompt: true, role: 'system', content: 'IMPORTED', marker: false },
+        ],
+        prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
+    });
+    const importedPreset = await call('preset.import', { kind: 'openai', data: presetFile });
+    assert.equal(importedPreset.name, 'Imported Preset');
+    assert.equal(importedPreset.prompts, 1);
+    const afterImport = await call('preset.kinds');
+    assert.ok(afterImport.kinds.find((k) => k.kind === 'openai').names.includes('Imported Preset'));
+    const importedDetail = await call('preset.detail', { kind: 'openai', name: 'Imported Preset' });
+    assert.equal(importedDetail.preset.temperature, 0.75);
+    console.log('ok preset import');
+
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');
 } catch (error) {
