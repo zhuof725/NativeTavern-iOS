@@ -43,7 +43,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("模型连接") {
+                Section {
                     Picker("服务", selection: $source) {
                         ForEach(Self.providers) { item in
                             Text(item.name).tag(item.id)
