@@ -191,8 +191,23 @@ private struct PromptInspectorView: View {
     }
 }
 
+/// Reads the engine's log, which is the only record after a crash on a device.
+enum EngineLog {
+    static var url: URL? {
+        guard let support = try? FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: false) else { return nil }
+        return support.appendingPathComponent("NativeTavern/engine.log")
+    }
+    static func read() -> String? {
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        // The newest lines are what matters; keep the file small enough to paste.
+        return text.split(separator: "\n").suffix(200).joined(separator: "\n")
+    }
+}
+
 private struct EngineView: View {
     @ObservedObject var engine: EmbeddedEngine
+    @State private var showingLog = false
 
     var body: some View {
         List {
@@ -222,6 +237,10 @@ private struct EngineView: View {
                         .foregroundStyle(.red)
                 }
             }
+            Section("诊断") {
+                Button("查看引擎日志") { showingLog = true }
+                    .disabled(EngineLog.read() == nil)
+            }
             Section {
                 Text("世界书扫描、宏展开、提示词组装和模型调用都由 App 内运行的原版酒馆核心完成。模型 API 需要联网并在设置中配置。")
                     .font(.footnote)
@@ -229,5 +248,22 @@ private struct EngineView: View {
             }
         }
         .navigationTitle("本地引擎")
+        .sheet(isPresented: $showingLog) {
+            NavigationStack {
+                ScrollView {
+                    Text(EngineLog.read() ?? "（没有日志）")
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+                .navigationTitle("引擎日志")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("完成") { showingLog = false }
+                    }
+                }
+            }
+        }
     }
 }

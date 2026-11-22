@@ -4,7 +4,7 @@
 // Nothing here reimplements SillyTavern: it starts upstream's own server.js,
 // then runs upstream's own public/script.js module graph on a minimal DOM so the
 // real world-info, macro and prompt-assembly code is what answers the app.
-import { mkdir, writeFile, rename, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, rename, readFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -23,6 +23,21 @@ if (!dataRoot || !path.isAbsolute(dataRoot)) {
 const coreRoot = path.join(here, 'core');
 // The module resolution hooks need to know which tree they are serving.
 process.env.NT_CORE_ROOT = coreRoot;
+
+// Everything the engine does is also written next to the app's data, because a
+// crash on a device leaves nothing else behind: stdout is not visible there.
+const logFile = path.join(dataRoot, 'engine.log');
+const log = (...parts) => {
+    const line = `${new Date().toISOString()} [engine] ${parts.join(' ')}\n`;
+    appendFile(logFile, line).catch(() => {});
+};
+process.on('uncaughtException', (error) => {
+    log('uncaught:', error?.stack ?? String(error));
+});
+process.on('unhandledRejection', (reason) => {
+    log('unhandled rejection:', reason?.stack ?? String(reason));
+});
+log('boot', process.version, path.basename(dataRoot));
 const enginePort = await pickFreePort();
 
 // Both the backend and the frontend core talk to the upstream origin.

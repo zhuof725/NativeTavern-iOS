@@ -42,6 +42,7 @@ final class EmbeddedEngine: ObservableObject {
             let launchID = UUID().uuidString
             let entryPath = entry.path
             let dataPath = data.path
+            Self.log("launch \(launchID) engine=\(entryPath) data=\(dataPath)")
             let worker = Thread { [weak self] in
                 let code = entryPath.withCString { script in
                     dataPath.withCString { root in
@@ -50,6 +51,7 @@ final class EmbeddedEngine: ObservableObject {
                         }
                     }
                 }
+                Self.log("node thread returned \(code)")
                 Task { @MainActor in
                     self?.workerExit = code
                     self?.phase = code == -4
@@ -58,11 +60,32 @@ final class EmbeddedEngine: ObservableObject {
                 }
             }
             worker.name = "NativeTavern.Node"
-            worker.stackSize = 8 * 1024 * 1024
+            // V8 derives its stack limit from the thread, and the core's module
+            // graph is deep; the reference implementation uses 16 MB for exactly
+            // this reason. A smaller stack faults inside the runtime.
+            worker.stackSize = 16 * 1024 * 1024
             worker.start()
             Task { await discover(in: data, launchID: launchID) }
         } catch {
             phase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Appends to a log the user can read from Settings, since a crash on a
+    /// device leaves nothing else behind.
+    nonisolated static func log(_ message: String) {
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        guard let support = try? FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true) else { return }
+        let file = support.appendingPathComponent("NativeTavern/engine.log")
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: file) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: file)
         }
     }
 
