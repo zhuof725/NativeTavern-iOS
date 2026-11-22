@@ -8,9 +8,9 @@
 
 | 项 | 值 |
 |---|---|
-| IPA | `NativeTavern-unsigned.ipa`，105 MiB |
-| 提交 | `30bda2c` |
-| 构建记录 | [GitHub Actions](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/44983614489) |
+| IPA | `NativeTavern-unsigned.ipa`，约 109 MiB |
+| 提交 | `250a019` |
+| 构建记录 | [GitHub Actions](https://github.com/zhuof725/NativeTavern-iOS/actions/runs/45014074566) |
 | 签名 | 未签名，安装前需自签 |
 | 设备 | iPhone ARM64，iOS 17+ |
 | 验证 | 结构、SHA256 校验通过；**未在真机运行** |
@@ -88,13 +88,15 @@ SwiftUI → URLSession → 127.0.0.1/engine/rpc → 原版模块
 ## 已验证
 
 ```sh
-npm test     # 10 项，本地与 GitHub macOS/Node 24 均通过
+npm test     # 12 项，本地 Node 22 与 GitHub macOS/Node 24 均通过
 ```
 
 - **传输层**：握手、令牌校验、拒绝浏览器来源、RPC 错误码。
 - **启动**：真实启动原版后端与前端核心，写入世界书 → 激活 → 关键词扫描 → 进入提示词。
 - **生成**：用本地 OpenAI 兼容模拟服务验证完整链路。请求中的消息由上游 `openai.js` 组装，
   包含角色卡字段、世界书注入与聊天历史；回复经上游路径写回并返回。
+- **管理接口**：角色创建/编辑/删除/导入/换头像、聊天新建/重命名/删除/读取、
+  消息编辑/删除/滑动、世界书条目增删改、预设应用、提示词开关、设置快照。
 
 ## 原生界面覆盖
 
