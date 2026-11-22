@@ -96,6 +96,26 @@ final class ChatStore: ObservableObject {
         busy = false
     }
 
+    func continueLast() async {
+        guard !busy, !messages.isEmpty else { return }
+        busy = true
+        errorMessage = nil
+        do {
+            let reply = try await client.call(
+                "chat.generate",
+                args: ["type": .string("continue")],
+                as: SendReply.self
+            )
+            messages = reply.messages
+            if let error = reply.error, !error.isEmpty {
+                errorMessage = error
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        busy = false
+    }
+
     func regenerateLast() async {
         guard !busy, let last = messages.last, !last.isUser else { return }
         await swipe(messageId: last.id, direction: "right")

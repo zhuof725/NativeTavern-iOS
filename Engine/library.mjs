@@ -300,7 +300,12 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
                 lastMessage: String(item.last_mes ?? ''),
                 messageCount: Number(item.chat_items ?? 0),
                 lastUpdated: String(item.last_date ?? ''),
-            })).sort((a, b) => a.fileName.localeCompare(b.fileName)),
+            })).sort((a, b) => {
+                const left = a.lastUpdated || '';
+                const right = b.lastUpdated || '';
+                if (left !== right) return right.localeCompare(left);
+                return b.fileName.localeCompare(a.fileName);
+            }),
         };
     });
 
@@ -541,6 +546,22 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
             // The user's turn is already in the chat; returning it keeps the UI
             // and the core in agreement even when the provider refused.
             await core.saveChatConditional().catch(() => {});
+            return { ...snapshot(), error: String(error?.message ?? error) };
+        }
+    });
+
+    /** Continue, impersonate and regenerate, all through Generate(). */
+    define('chat.generate', async (args) => {
+        const { core: api } = await coreBundle();
+        const type = ['continue', 'impersonate', 'regenerate'].includes(args.type) ? String(args.type) : 'normal';
+        api.setOnlineStatus('connected');
+        try {
+            await api.Generate(type, {}, false);
+            await api.saveChatConditional();
+            return { ...snapshot(), error: null };
+        } catch (error) {
+            log(`generation (${type}) failed: ${error?.stack ?? error}`);
+            await api.saveChatConditional().catch(() => {});
             return { ...snapshot(), error: String(error?.message ?? error) };
         }
     });

@@ -54,6 +54,12 @@ struct ChatView: View {
                         Label("重命名对话", systemImage: "pencil")
                     }
                     Button {
+                        Task { await store.continueLast() }
+                    } label: {
+                        Label("继续生成", systemImage: "text.append")
+                    }
+                    .disabled(store.busy || store.messages.isEmpty)
+                    Button {
                         Task { await store.regenerateLast() }
                     } label: {
                         Label("重新生成", systemImage: "arrow.clockwise")
