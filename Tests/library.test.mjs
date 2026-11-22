@@ -17,6 +17,12 @@ const step = async (name, fn) => {
 };
 
 try {
+    await step('startup selects chat-completion API', async () => {
+        const settings = await h.call('settings.snapshot');
+        assert.equal(settings.mainApi, 'openai');
+        return { mainApi: settings.mainApi, source: settings.source };
+    });
+
     await step('character.list', async () => {
         const r = await h.call('character.list');
         assert.ok(r.characters.length >= 1);

@@ -59,7 +59,10 @@ const loadCore = () => {
             const started = await runtime.startCore({
                 upstream,
                 coreRoot,
-                log: (message) => console.log('[core]', message),
+                log: (message) => {
+                    log('[core]', message);
+                    console.log('[core]', message);
+                },
             });
             // Snapshot the healthy prompt order for this run.
             runtime.restorePromptOrder?.(started.modules);
@@ -140,7 +143,7 @@ const library = createLibraryApi({
     session,
     saveChat,
     restorePromptOrder: (modules) => restorePromptOrderHook?.(modules),
-    log: (message) => console.log('[library]', message),
+    log: (message) => log('[library]', message),
 });
 
 const engine = createEngineApi({

@@ -124,10 +124,11 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
      */
     const GENERATION_TIMEOUT_MS = 180000;
 
-    const generationPreflight = (modules) => {
-        const context = globalThis.SillyTavern.getContext();
+    const generationPreflight = (api, modules) => {
         const settings = modules.openai.oai_settings ?? {};
-        if (context.mainApi !== 'openai') {
+        // st-context captures main_api at module initialization instead of
+        // exposing the live binding. The core module's export is authoritative.
+        if (api.main_api !== 'openai') {
             return '还没有启用对话补全。请到“设置 → 模型连接”选择服务并保存，再发送消息。';
         }
         if (settings.chat_completion_source === 'custom' && !String(settings.custom_url ?? '').trim()) {
@@ -137,7 +138,7 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
     };
 
     const runGeneration = async (api, modules, type) => {
-        const blocked = generationPreflight(modules);
+        const blocked = generationPreflight(api, modules);
         if (blocked) return { ...snapshot(), error: blocked };
 
         const context = globalThis.SillyTavern.getContext();
@@ -583,7 +584,7 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
     define('chat.send', async (args) => {
         const { core: api, modules } = await coreBundle();
         const text = requireString(args, 'text');
-        const blocked = generationPreflight(modules);
+        const blocked = generationPreflight(api, modules);
         if (blocked) return { ...snapshot(), error: blocked };
 
         const context = globalThis.SillyTavern.getContext();
@@ -804,7 +805,7 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
             userAvatar: String(settings.user_avatar ?? ''),
             // The live value is what generation uses; the saved file can still
             // name the Horde until the next settings write.
-            mainApi: String(globalThis.SillyTavern.getContext().mainApi ?? settings.main_api ?? ''),
+            mainApi: String(api.main_api ?? settings.main_api ?? ''),
             source,
             currentModel: String(openaiSettings[modelKeys[source] ?? 'custom_model'] ?? ''),
             customUrl: String(openaiSettings.custom_url ?? ''),
