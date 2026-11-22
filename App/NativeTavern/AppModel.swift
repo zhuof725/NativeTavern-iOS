@@ -12,7 +12,6 @@ final class AppModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .starting("正在启动本地引擎…")
-    @Published private(set) var characters: [CharacterSummary] = []
     @Published var errorMessage: String? {
         didSet { if errorMessage != nil { showErrorAlert = true } }
     }
