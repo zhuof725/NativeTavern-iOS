@@ -43,6 +43,10 @@ jobs:
           # dependencies; the core's tree does not cover it.
           bash Scripts/install-engine-deps.sh
 
+          # Drop payloads the app can never load (ONNX WASM runtimes, the
+          # bundler, source maps). Each removal is justified in the script.
+          bash Scripts/trim-core.sh
+
       - name: Build the frontend library bundle
         # Bundled from the core directory so the imports resolve against the
         # vendored dependencies, exactly as they do at runtime.
