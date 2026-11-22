@@ -109,11 +109,3 @@ final class ChatStore: ObservableObject {
         )
     }
 }
-
-struct GenerationReply: Decodable, Sendable {
-    struct Message: Decodable, Sendable {
-        let role: String
-        let content: String
-    }
-    let messages: [Message]
-}

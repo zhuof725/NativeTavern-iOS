@@ -1,7 +1,7 @@
 import Foundation
 
 /// JSON-RPC call into the local engine, which runs the original SillyTavern core.
-struct EngineCall<Result: Decodable>: Encodable {
+struct EngineCall: Encodable {
     let id: String
     let method: String
     let args: [String: JSONValue]
@@ -33,18 +33,6 @@ enum JSONValue: Encodable {
         case .null: try container.encodeNil()
         }
     }
-
-    static func from(_ value: Any) -> JSONValue {
-        switch value {
-        case let value as String: return .string(value)
-        case let value as Bool: return .bool(value)
-        case let value as Int: return .number(Double(value))
-        case let value as Double: return .number(value)
-        case let value as [Any]: return .array(value.map(JSONValue.from))
-        case let value as [String: Any]: return .object(value.mapValues(JSONValue.from))
-        default: return .null
-        }
-    }
 }
 
 /// One message in the assembled model prompt.
@@ -64,18 +52,31 @@ struct BuiltPrompt: Decodable, Sendable {
     }
 }
 
+/// A reply produced by the core's own generation path.
+struct GenerationReply: Decodable, Sendable {
+    struct Message: Decodable, Sendable {
+        let role: String
+        let content: String
+    }
+    let messages: [Message]
+}
+
+struct RemoteFailure: Decodable {
+    let code: String
+    let message: String
+}
+
+struct EngineReply<Result: Decodable>: Decodable {
+    let id: String?
+    let result: Result?
+    let error: RemoteFailure?
+}
+
 extension LocalEngineClient {
     /// Calls the engine's original-core API. The transport authenticates the
     /// request; the core itself is upstream SillyTavern code running in-process.
     func call<Result: Decodable>(_ method: String, args: [String: JSONValue] = [:], as type: Result.Type) async throws -> Result {
-        struct RemoteFailure: Decodable { let code: String; let message: String }
-        struct Reply<Result: Decodable>: Decodable {
-            let id: String?
-            let result: Result?
-            let error: RemoteFailure?
-        }
-
-        let call = EngineCall<Result>(method: method, args: args)
+        let call = EngineCall(method: method, args: args)
         var request = URLRequest(url: baseURL.appendingPathComponent("engine/rpc"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -86,7 +87,7 @@ extension LocalEngineClient {
         guard let http = response as? HTTPURLResponse else {
             throw LocalEngineFailure("本地引擎没有返回 HTTP 响应。")
         }
-        let reply = try JSONDecoder().decode(Reply<Result>.self, from: data)
+        let reply = try JSONDecoder().decode(EngineReply<Result>.self, from: data)
         if let error = reply.error { throw LocalEngineFailure("\(error.code): \(error.message)") }
         guard http.statusCode == 200, reply.id == call.id, let result = reply.result else {
             throw LocalEngineFailure("本地引擎响应与当前请求不匹配。")
