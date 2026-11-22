@@ -24,7 +24,9 @@ class HostError extends Error {
  * @param {string} options.launchID per-launch UUID supplied by the app
  * @param {string} options.upstream base URL of the upstream SillyTavern server
  */
-export async function startLocalHost({ launchID, upstream, engine }) {
+export async function startLocalHost({ launchID, upstream }) {
+    // The engine API is attached after listen: it depends on this host's session.
+    let engine = null;
     if (typeof launchID !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(launchID)) {
         throw new HostError('INVALID_LAUNCH', 'A per-launch UUID is required.');
     }
@@ -37,7 +39,7 @@ export async function startLocalHost({ launchID, upstream, engine }) {
     const session = new UpstreamSession(upstream);
 
     const server = http.createServer((request, response) => {
-        handle(request, response, { expected, session, engine }).catch((error) => {
+        handle(request, response, { expected, session, getEngine: () => engine }).catch((error) => {
             const known = error instanceof HostError;
             if (!response.headersSent) {
                 response.writeHead(known ? error.status : 500, { 'content-type': 'application/json; charset=utf-8' });
@@ -61,6 +63,10 @@ export async function startLocalHost({ launchID, upstream, engine }) {
     });
     const address = server.address();
     return {
+        // Exposed so the engine API can call the vendored server with the same
+        // session and CSRF handling the transport uses.
+        session,
+        attachEngine(api) { engine = api; },
         endpoint: {
             protocolVersion: PROTOCOL_VERSION,
             launchID,
@@ -75,7 +81,8 @@ export async function startLocalHost({ launchID, upstream, engine }) {
     };
 }
 
-async function handle(request, response, { expected, session, engine }) {
+async function handle(request, response, { expected, session, getEngine }) {
+    const engine = getEngine();
     if (request.headers.origin) {
         throw new HostError('ORIGIN_DENIED', 'Browser origins are not accepted.', 403);
     }
@@ -166,6 +173,11 @@ async function rpc(request, response, engine) {
         return json(response, 200, { id: message.id ?? null, result });
     } catch (error) {
         const known = typeof error?.status === 'number';
+        if (!known) {
+            // Unexpected failures are logged with their stack so they can be
+            // diagnosed; the client only gets a generic message.
+            console.log(`[engine] ${message.method} failed:`, error?.stack ?? error);
+        }
         return json(response, known ? error.status : 500, {
             id: message.id ?? null,
             error: {

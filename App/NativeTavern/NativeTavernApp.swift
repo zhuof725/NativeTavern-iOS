@@ -19,6 +19,11 @@ struct NativeTavernApp: App {
                 .tabItem { Label("提示词", systemImage: "text.alignleft") }
 
                 NavigationStack {
+                    ModelSettingsView(engine: engine)
+                }
+                .tabItem { Label("设置", systemImage: "gearshape") }
+
+                NavigationStack {
                     EngineView(engine: engine)
                 }
                 .tabItem { Label("本地引擎", systemImage: "cpu") }
@@ -28,8 +33,8 @@ struct NativeTavernApp: App {
     }
 }
 
-/// The chat surface. Messages are local state; the prompt that would be sent to
-/// the model is produced by the original SillyTavern core inside the app.
+/// The chat surface. Messages are local state; what the model receives is built
+/// by the original SillyTavern core inside the app.
 private struct ChatView: View {
     @ObservedObject var engine: EmbeddedEngine
     @StateObject private var store: ChatStore
@@ -39,15 +44,20 @@ private struct ChatView: View {
         _store = StateObject(wrappedValue: ChatStore(engine: engine))
     }
 
+    private var coreReady: Bool {
+        if case .transportReady(let status) = engine.phase { return status.sillyTavernCoreReady }
+        return false
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            if case .transportReady(let status) = engine.phase, status.sillyTavernCoreReady {
+            if coreReady {
                 chatBody
             } else {
                 ContentUnavailableView {
                     Label("本地引擎正在启动", systemImage: "cpu")
                 } description: {
-                    Text("原版酒馆核心正在 App 内加载。加载完成后即可使用世界书、宏和提示词组装。")
+                    Text("原版酒馆核心正在 App 内加载。首次启动需要复制数据模板，稍等片刻。")
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -57,7 +67,7 @@ private struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    Task { await store.buildPrompt() }
+                    Task { await store.refresh() }
                 } label: {
                     if store.isBusy { ProgressView() } else { Image(systemName: "arrow.clockwise") }
                 }
@@ -76,7 +86,7 @@ private struct ChatView: View {
                                 .id(message.id)
                         }
                         if store.messages.isEmpty {
-                            Text("还没有消息。发送一条，原版核心会用当前世界书和宏组装提示词。")
+                            Text("还没有消息。发送一条，原版核心会用当前角色卡和世界书组装提示词并调用模型。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 24)
@@ -96,6 +106,11 @@ private struct ChatView: View {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.red)
+                    .padding(.horizontal)
+            } else if case .working(let message) = store.status {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal)
             }
 
@@ -149,11 +164,11 @@ private struct PromptInspectorView: View {
         List {
             if let prompt = store.lastPrompt {
                 Section("世界书注入") {
-                    if prompt.worldInfo.before.isEmpty && prompt.worldInfo.after.isEmpty {
+                    let injected = prompt.worldInfo.before + prompt.worldInfo.after
+                    if injected.isEmpty {
                         Text("本次没有条目被激活。").foregroundStyle(.secondary)
                     } else {
-                        Text(prompt.worldInfo.before + prompt.worldInfo.after)
-                            .font(.footnote.monospaced())
+                        Text(injected).font(.footnote.monospaced())
                     }
                 }
                 Section("最终提示词（\(prompt.prompt.count) 条）") {
@@ -208,7 +223,7 @@ private struct EngineView: View {
                 }
             }
             Section {
-                Text("世界书扫描、宏展开和提示词组装由 App 内运行的原版酒馆核心完成。模型生成和角色卡导入仍在接入中。")
+                Text("世界书扫描、宏展开、提示词组装和模型调用都由 App 内运行的原版酒馆核心完成。模型 API 需要联网并在设置中配置。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

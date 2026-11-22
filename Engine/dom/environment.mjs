@@ -26,6 +26,15 @@ export function loadDomEnvironment({ url, coreRoot }) {
     });
     window.document.write(html);
 
+    // The core's entry waits for the page's load event before initialising.
+    // Writing markup leaves the document at 'interactive', and nothing here will
+    // ever fire load, so the engine states the fact directly: the page is ready.
+    // This is what a browser does when it finishes parsing and loading.
+    Object.defineProperty(window.document, 'readyState', {
+        value: 'complete',
+        configurable: true,
+    });
+
     const g = globalThis;
     const define = (key, value) =>
         Object.defineProperty(g, key, { value, writable: true, configurable: true, enumerable: true });
@@ -43,7 +52,31 @@ export function loadDomEnvironment({ url, coreRoot }) {
         'Response', 'TextEncoder', 'TextDecoder', 'HTMLCanvasElement', 'CSS', 'DragEvent',
         'WheelEvent', 'FocusEvent', 'InputEvent', 'PointerEvent', 'TouchEvent', 'EventTarget',
         'DocumentFragment', 'Text', 'Comment', 'Range', 'Selection', 'ProgressEvent',
-        'XMLSerializer', 'HTMLOptionElement',
+        'XMLSerializer', 'HTMLOptionElement', 'HTMLInputElement', 'HTMLSelectElement',
+        'HTMLTextAreaElement', 'HTMLImageElement', 'HTMLAnchorElement', 'HTMLDivElement',
+        'HTMLSpanElement', 'HTMLButtonElement', 'HTMLFormElement', 'HTMLVideoElement',
+        'HTMLAudioElement', 'HTMLScriptElement', 'HTMLStyleElement', 'HTMLLabelElement',
+        'SVGElement', 'HTMLCollection', 'NodeList', 'HTMLUnknownElement',
+        'HTMLParagraphElement', 'HTMLTableElement', 'HTMLUListElement',
+        'HTMLLIElement', 'HTMLHeadingElement', 'HTMLTemplateElement',
+        'HTMLIFrameElement', 'HTMLMediaElement', 'HTMLSourceElement',
+        'HTMLPictureElement', 'HTMLPreElement', 'HTMLHRElement', 'HTMLBRElement',
+        'HTMLDialogElement', 'HTMLFieldSetElement', 'HTMLOListElement',
+        'HTMLTimeElement', 'HTMLSlotElement', 'HTMLTrackElement',
+        'HTMLDataElement', 'HTMLMeterElement', 'HTMLProgressElement',
+        'HTMLOutputElement', 'HTMLDetailsElement', 'HTMLMapElement',
+        'HTMLAreaElement', 'HTMLBaseElement', 'HTMLBodyElement', 'HTMLHeadElement',
+        'HTMLHtmlElement', 'HTMLTitleElement', 'HTMLMetaElement', 'HTMLLinkElement',
+        'HTMLModElement', 'HTMLObjectElement', 'HTMLParamElement',
+        'HTMLQuoteElement', 'HTMLTableCaptionElement', 'HTMLTableCellElement',
+        'HTMLTableColElement', 'HTMLTableRowElement', 'HTMLTableSectionElement',
+        'HTMLDListElement', 'HTMLDirectoryElement', 'HTMLFontElement',
+        'HTMLFrameElement', 'HTMLFrameSetElement', 'HTMLMarqueeElement',
+        'HTMLMenuElement', 'HTMLOptGroupElement', 'CSSImportRule',
+        'CSSStyleRule', 'CSSStyleSheet', 'CSSRuleList', 'StyleSheet',
+        'StyleSheetList', 'MediaList', 'CSSMediaRule', 'DOMTokenList',
+        'ShadowRoot', 'StaticRange', 'AbstractRange', 'HTMLAllCollection',
+        'RadioNodeList', 'TreeWalker', 'NodeFilter', 'NodeIterator',
     ];
     for (const key of copy) {
         if (window[key] !== undefined) define(key, window[key]);
@@ -60,12 +93,13 @@ export function loadDomEnvironment({ url, coreRoot }) {
     define('matchMedia', matchMedia);
     window.matchMedia = matchMedia;
 
-    // Constructors a real page has but some DOM implementations omit.
+    // Constructors a real page has. The DOM implementation's own versions may be
+    // present but unusable outside a rendering context, so the engine installs
+    // plain element factories: the core only needs the element identity.
     for (const [name, factory] of Object.entries(LEGACY_CONSTRUCTORS)) {
-        if (typeof window[name] === 'undefined') {
-            define(name, factory(window));
-            window[name] = g[name];
-        }
+        const constructor = factory(window);
+        define(name, constructor);
+        try { window[name] = constructor; } catch { /* read-only on this DOM */ }
     }
     // Inert media APIs: no playback or capture happens in the engine.
     if (typeof g.URL.createObjectURL !== 'function') {

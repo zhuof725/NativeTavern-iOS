@@ -12,3 +12,4 @@ export function registerResolvers() {
     pending ??= register(new URL('./loader.mjs', import.meta.url).href);
     return pending;
 }
+

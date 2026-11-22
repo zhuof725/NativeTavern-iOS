@@ -1,10 +1,10 @@
-// Routes the frontend core's root-relative requests to the upstream core.
+// Routes the frontend core's requests to the upstream core.
 //
 // In a browser, pages resolve '/api/...' against the page origin and the session
 // cookie rides along automatically. Here there is no browser: the core runs
 // inside the app, so this shim supplies both the origin and a session jar. That
 // keeps every upstream endpoint, payload and CSRF rule exactly as shipped.
-export function installLoopbackFetch({ upstream }) {
+export function installLoopbackFetch({ upstream, window }) {
     const native = globalThis.fetch;
     if (native.__loopbackInstalled) return native;
 
@@ -28,31 +28,60 @@ export function installLoopbackFetch({ upstream }) {
         csrf = (await response.json()).token;
     };
 
+    // Resolves any input shape (string, URL, Request) to an absolute URL string.
+    const resolveURL = (input) => {
+        const raw = typeof input === 'string'
+            ? input
+            : (input?.url ?? String(input));
+        if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+        return new URL(raw, `${origin}/`).href;
+    };
+
     const send = async (url, init, retry) => {
         await ensureSession();
-        const headers = new Headers(init.headers || {});
-        const target = new URL(url);
-        if (target.origin === origin) {
+        const headers = new Headers(init?.headers ?? (url instanceof Request ? url.headers : undefined));
+        if (new URL(url).origin === origin) {
             headers.set('x-csrf-token', csrf);
             if (cookies.size) headers.set('cookie', [...cookies].map(([k, v]) => `${k}=${v}`).join('; '));
         }
-        const response = await native(url, { ...init, headers, redirect: init.redirect ?? 'manual' });
+        const response = await native(url, { ...init, headers });
         absorb(response);
         if (response.status === 403 && !retry) {
+            // Stale token or expired session: refresh once and retry.
             csrf = null;
             cookies.clear();
             return send(url, init, true);
+        }
+        if (response.status === 307 || response.status === 308) {
+            const location = response.headers.get('location');
+            if (location) return send(new URL(location, url).href, init, true);
         }
         return response;
     };
 
     const shim = (input, init = {}) => {
-        const raw = typeof input === 'string' ? input : input.url;
-        const url = raw.startsWith('/') ? `${origin}${raw}` : raw;
+        const url = resolveURL(input);
+        const target = new URL(url);
+        // The core probes several external services on startup (Horde status and
+        // model lists, OpenRouter auth…). Those are the web UI's conveniences and
+        // their failures surface as unhandled socket errors. The engine answers
+        // them as "unavailable" instead of reaching out to third parties.
+        if (target.origin !== origin) {
+            return Promise.resolve(new Response('{"error":"external requests are disabled in the app"}', {
+                status: 503,
+                headers: { 'content-type': 'application/json' },
+            }));
+        }
         return send(url, init, false);
     };
 
     shim.__loopbackInstalled = true;
     globalThis.fetch = shim;
+    // The page modules resolve bare `fetch` against the DOM global, which is a
+    // different binding from Node's; both must point at the same transport.
+    if (window) {
+        window.fetch = shim;
+        try { window.happyDOM?.settings?.setJavaScriptEvaluation?.('fetch', shim); } catch { /* older happy-dom */ }
+    }
     return shim;
 }

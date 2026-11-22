@@ -18,8 +18,9 @@ const stubEngine = {
 
 const UPSTREAM = 'http://127.0.0.1:9';
 
-async function running(t) {
-    const host = await startLocalHost({ launchID: randomUUID(), upstream: UPSTREAM, engine: stubEngine });
+async function running(t, { engine = stubEngine } = {}) {
+    const host = await startLocalHost({ launchID: randomUUID(), upstream: UPSTREAM });
+    if (engine) host.attachEngine(engine);
     t.after(() => host.close());
     return host;
 }

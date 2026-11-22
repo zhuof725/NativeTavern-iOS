@@ -4,13 +4,14 @@
 // Nothing here reimplements SillyTavern: it starts upstream's own server.js,
 // then runs upstream's own public/script.js module graph on a minimal DOM so the
 // real world-info, macro and prompt-assembly code is what answers the app.
-import { mkdir, writeFile, rename } from 'node:fs/promises';
+import { mkdir, writeFile, rename, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { startLocalHost } from './host.mjs';
 import { createEngineApi } from './api.mjs';
+import { createGenerationApi } from './generation.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,15 +29,30 @@ const upstream = `http://127.0.0.1:${enginePort}`;
 // The core is started lazily: the transport must come up first so the app can
 // show progress instead of waiting on a multi-second module boot.
 let corePromise = null;
+let restorePromptOrderHook = null;
 const loadCore = () => {
     corePromise ??= (async () => {
         const runtime = await import('./core-runtime.mjs');
-        return runtime.startCore({ upstream, coreRoot, log: (m) => console.log('[core]', m) });
+        restorePromptOrderHook = runtime.restorePromptOrder;
+        try {
+            const started = await runtime.startCore({
+                upstream,
+                coreRoot,
+                log: (message) => console.log('[core]', message),
+            });
+            // Snapshot the healthy prompt order for this run.
+            runtime.restorePromptOrder?.(started.modules);
+            console.log('[core] ready');
+            return started;
+        } catch (error) {
+            // A failed core load must be visible: without it every call returns
+            // an opaque 500 and nothing says why.
+            console.log('[core] failed to start:', error?.stack ?? error);
+            throw error;
+        }
     })();
     return corePromise;
 };
-
-const engine = createEngineApi({ getCore: loadCore });
 
 // Start the backend in the background and let the transport answer immediately.
 const upstreamReady = startUpstream(coreRoot, dataRoot, enginePort).catch((error) => {
@@ -44,7 +60,68 @@ const upstreamReady = startUpstream(coreRoot, dataRoot, enginePort).catch((error
     throw error;
 });
 
-const host = await startLocalHost({ launchID, upstream, engine });
+// The gateway owns the upstream session (cookies + CSRF); generation needs it
+// to reach the vendored server, so the API is wired after the host exists.
+const host = await startLocalHost({ launchID, upstream });
+
+// Upstream may still be starting when the app fires its first call, so every
+// upstream-backed call waits for it rather than racing it.
+const session = {
+    async request(method, requestPath, options) {
+        await upstreamReady;
+        return host.session.request(method, requestPath, options);
+    },
+};
+const generation = createGenerationApi({
+    getCore: loadCore,
+    session,
+    restorePromptOrder: (modules) => restorePromptOrderHook?.(modules),
+});
+
+/**
+ * Writes a chat file through the vendored server's own endpoint.
+ *
+ * The server derives the chats subdirectory from `avatar_url` (a character's
+ * avatar file name), so callers pass the real avatar rather than the display
+ * name — otherwise the chat is written to a directory the reader never looks in.
+ */
+const saveChat = async ({ characterName, avatar, fileName, chat }) => {
+    await upstreamReady;
+    const response = await session.request('POST', '/api/chats/save', {
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({
+            avatar_url: avatar,
+            file_name: fileName,
+            chat,
+            force: true,
+        })),
+    });
+    const text = response.body?.toString('utf8') ?? '';
+    if (response.status !== 200 || !text.includes('ok')) {
+        throw new Error(`Chat save failed: ${response.status} ${text.slice(0, 200)}`);
+    }
+
+};
+
+// One shared helper for calls the engine makes into the vendored server.
+const upstreamPost = async (requestPath, body) => {
+    await upstreamReady;
+    const response = await session.request('POST', requestPath, {
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify(body ?? {})),
+    });
+    const text = response.body?.toString('utf8') ?? '';
+    try { return JSON.parse(text); } catch { return text; }
+};
+
+const engine = createEngineApi({
+    getCore: loadCore,
+    generation,
+    saveChat,
+    upstreamPost,
+    restorePromptOrder: (modules) => restorePromptOrderHook?.(modules),
+});
+host.attachEngine(engine);
 
 await mkdir(dataRoot, { recursive: true, mode: 0o700 });
 const temporary = path.join(dataRoot, `.endpoint-${randomUUID()}.json`);
@@ -86,6 +163,31 @@ async function startUpstream(root, dataDir, port) {
 
     await import(`file://${path.join(root, 'server.js')}`);
     await waitForUpstream(port);
+    await completeFirstRun(nodeDataRoot);
+}
+
+/**
+ * Marks the vendored server's settings as past first run.
+ *
+ * Upstream's first run opens an onboarding dialog that asks the user for a name.
+ * That dialog is part of the web UI; here it would wait forever and block the
+ * core's settings load. The engine has its own UI, so it answers that question
+ * ahead of time with the default name the settings already carry.
+ */
+async function completeFirstRun(nodeDataRoot) {
+    const settingsDir = path.join(nodeDataRoot, 'default-user');
+    const settingsFile = path.join(settingsDir, 'settings.json');
+    try {
+        const raw = await readFile(settingsFile, 'utf8');
+        const settings = JSON.parse(raw);
+        if (settings.firstRun) {
+            settings.firstRun = false;
+            await writeFile(settingsFile, JSON.stringify(settings, null, 4), 'utf8');
+            console.log('[upstream] marked first run complete');
+        }
+    } catch {
+        // No settings yet: upstream will create them, and the next start is clean.
+    }
 }
 
 async function waitForUpstream(port, timeoutMs = 180000) {

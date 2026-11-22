@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { registerResolvers } from './dom/register.mjs';
 import { loadDomEnvironment } from './dom/environment.mjs';
-import { loadClassicScripts } from './dom/classic.mjs';
+import { loadClassicScripts, installScriptExecution } from './dom/classic.mjs';
 import { installFetchXHR } from './dom/xhr.mjs';
 import { installLoopbackFetch } from './dom/loopback.mjs';
 
@@ -18,7 +18,12 @@ import { installLoopbackFetch } from './dom/loopback.mjs';
  * @param {string} options.coreRoot directory containing upstream public/ and src/
  * @param {(message: string) => void} [options.log]
  */
+/** Remembers the prompt order the manager started with, across settings reloads. */
+let initialPromptOrder = null;
+
 export async function startCore({ upstream, coreRoot, log = () => {} }) {
+    // Re-initialising means new module instances; nothing from a previous run applies.
+    initialPromptOrder = null;
     // The page's module graph needs these before the first upstream import.
     await registerResolvers();
     const publicDir = path.join(coreRoot, 'public');
@@ -28,7 +33,8 @@ export async function startCore({ upstream, coreRoot, log = () => {} }) {
     installToastr(window);
     globalThis.fixToastrForDialogs = () => {};
     installFetchXHR(window);
-    installLoopbackFetch({ upstream });
+    installLoopbackFetch({ upstream, window });
+    installScriptExecution(publicDir, window);
 
     const classic = loadClassicScripts(publicDir, window);
     if (classic.failed.length) log(`classic scripts not loaded: ${JSON.stringify(classic.failed)}`);
@@ -51,38 +57,126 @@ export async function startCore({ upstream, coreRoot, log = () => {} }) {
         extensions: await import(`file://${path.join(publicDir, 'scripts/extensions.js')}`),
     };
 
-    await waitForFirstLoad(log);
+    await waitForSettings(core, log);
+    await completeInit(core, modules, log);
 
     return { core, modules, window };
 }
 
 /**
- * Waits until the core's own first-load path has finished.
+ * Waits until the core has loaded its settings.
  *
- * script.js runs firstLoadInit on DOM ready; it fetches settings and builds the
- * prompt manager. Calling into world info or the prompt pipeline before that
- * gives silently wrong answers (no books, empty prompts), so this waits for the
- * observable end state instead of a fixed delay.
+ * script.js runs its own initialisation when the page reports ready; that path
+ * ends with the settings being applied. Everything the engine exposes (world
+ * info, prompts, model choice) depends on that having happened, so it is waited
+ * for explicitly rather than assumed.
  */
-async function waitForFirstLoad(log, timeoutMs = 180000) {
+async function waitForSettings(core, log, timeoutMs = 180000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-        if (macroRegistrySize() > 0) return;
+        const context = globalThis.SillyTavern?.getContext?.();
+        // A loaded core reports a character list; settings populate the prompt
+        // manager lazily on first use, so this is the observable end state.
+        if (context && Array.isArray(context.characters)) {
+            const usernames = context.name1;
+            if (usernames) {
+                log('core settings loaded');
+                return;
+            }
+        }
         await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    log('first load did not complete in time; continuing');
+    log('WARNING: core settings did not load in time');
 }
 
-/** Macro registration count, read through the original parser's own API. */
-function macroRegistrySize() {
+/**
+ * Finishes the initialisation the page's own load path would have completed.
+ *
+ * The core's startup continues after the settings step (macro registry, world
+ * info list, prompt manager). When that sequence is interrupted — a step that
+ * touches browser-only APIs — the engine runs the remaining registration
+ * itself, using the core's own exported functions.
+ */
+async function completeInit(core, modules, log) {
     try {
-        const context = globalThis.SillyTavern?.getContext?.();
-        if (!context) return 0;
-        // A loaded core resolves macros through this function.
-        return String(context.substituteParams?.('{{noop}}') ?? '').includes('{{') === false ? 1 : 0;
-    } catch {
-        return 0;
+        modules.macros.initMacros();
+    } catch (error) {
+        log(`macro registration failed: ${error.message}`);
     }
+
+    try {
+        await modules.worldInfo.updateWorldInfoList();
+    } catch (error) {
+        log(`world info list unavailable: ${error.message}`);
+    }
+
+    // Characters back the chat list, world-info bindings and the prompt's
+    // character fields; the page loads them during startup. This is required
+    // for chats to open at all, so a failure is reported rather than ignored.
+    try {
+        await core.getCharacters();
+        log(`characters loaded: ${globalThis.SillyTavern.getContext().characters.length}`);
+    } catch (error) {
+        log(`character list unavailable: ${error.message}`);
+    }
+
+    try {
+        // The prompt manager is created lazily when the API changes in the UI.
+        // The engine has no UI, so it creates it now; this is upstream's own
+        // constructor, and it reads the settings the core just loaded.
+        modules.openai.setupChatCompletionPromptManager(modules.openai.oai_settings);
+
+        // The saved settings key their prompt order by a different sentinel id
+        // than the manager's own configuration uses. Upstream's sanitizer adds a
+        // matching entry when it first starts; do the same so the manager has a
+        // prompt order to build a collection from.
+        const manager = modules.openai.promptManager;
+        const dummyId = manager?.configuration?.promptOrder?.dummyId;
+        if (manager && dummyId !== undefined) {
+            const order = manager.serviceSettings.prompt_order ?? [];
+            if (!order.some((entry) => String(entry.character_id) === String(dummyId))) {
+                order.push({ character_id: dummyId, order: order[0]?.order ?? [] });
+                manager.serviceSettings.prompt_order = order;
+                if (typeof manager.updatePrompts === 'function') {
+                    manager.updatePrompts(manager.serviceSettings.prompts);
+                }
+            }
+        }
+        const collection = manager?.getPromptCollection('normal');
+        log(`prompt manager ready: ${(collection?.collection ?? []).length} prompts`);
+    } catch (error) {
+        log(`prompt manager unavailable: ${error.message}`);
+    }
+}
+
+/**
+ * Keeps the prompt order alive across a settings reload.
+ *
+ * The core's settings loader replaces the whole service settings object from the
+ * saved file, whose prompt order is keyed by a different sentinel id than the
+ * manager uses. Upstream only fixes that up on first initialisation, so a reload
+ * otherwise leaves the manager with no prompt order and silently drops chat
+ * history and the main prompt from every request.
+ */
+export function restorePromptOrder(modules) {
+    const manager = modules?.openai?.promptManager;
+    const dummyId = manager?.configuration?.promptOrder?.dummyId;
+    if (!manager || dummyId === undefined) return;
+
+    const order = manager.serviceSettings.prompt_order ?? [];
+    const hasOwnEntry = order.some((entry) => String(entry.character_id) === String(dummyId));
+
+    // Snapshot the good state while it exists, so a later reload can be undone.
+    if (hasOwnEntry && !initialPromptOrder) {
+        initialPromptOrder = order.map((entry) => ({ ...entry, order: (entry.order ?? []).map((item) => ({ ...item })) }));
+        return;
+    }
+    if (hasOwnEntry) return;
+
+    const template = initialPromptOrder?.find((entry) => String(entry.character_id) === String(dummyId));
+    order.push({ character_id: dummyId, order: template?.order ?? order[0]?.order ?? [] });
+    manager.serviceSettings.prompt_order = order;
+    if (typeof manager.updatePrompts === 'function') manager.updatePrompts(manager.serviceSettings.prompts);
 }
 
 async function loadJQuery(window) {

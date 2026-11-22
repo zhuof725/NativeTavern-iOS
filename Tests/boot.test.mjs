@@ -88,6 +88,16 @@ test('boot serves the upstream core through the launch-token transport', { timeo
     const activated = await rpc('worldinfo.activate', { names: ['BootSmoke'] });
     assert.deepEqual(activated.result.active, ['BootSmoke']);
 
+    // The prompt is built from the chat the core has open, so the chat is loaded
+    // first — the same order the app uses.
+    const loaded = await rpc('chat.load', {
+        messages: [{ name: 'User', is_user: true, mes: 'We saw a dragon on the pass.' }],
+    });
+    assert.equal(loaded.result.length, 1);
+    assert.equal(loaded.result.firstMessage, 'We saw a dragon on the pass.');
+
+    const statusAfterLoad = await rpc('engine.status', {});
+    // The engine's own log is the only place a silent prompt-assembly failure shows up.
     const built = await rpc('prompt.build', {
         character: {
             name: 'Seraphina',
@@ -95,7 +105,6 @@ test('boot serves the upstream core through the launch-token transport', { timeo
             personality: 'Watchful.',
             scenario: 'A cold road at dusk.',
         },
-        messages: [{ name: 'User', is_user: true, mes: 'We saw a dragon on the pass.' }],
         maxContext: 8192,
     });
 
@@ -103,8 +112,9 @@ test('boot serves the upstream core through the launch-token transport', { timeo
     const promptText = JSON.stringify(built.result.prompt);
     assert.match(promptText, /BOOT_WI/, 'the activated world info entry must reach the prompt');
     assert.match(promptText, /calm ranger/, 'the character description must reach the prompt');
+    assert.ok(built.result.prompt.some(m => m.role === 'user'),
+        `a user role must be present; saw ${JSON.stringify(built.result)}`);
     assert.match(promptText, /dragon on the pass/, 'the user turn must reach the prompt');
-    assert.ok(built.result.prompt.some(m => m.role === 'user'));
 
     // The transport must still refuse unauthenticated callers.
     const denied = await fetch(`${endpoint.url}/engine/rpc`, {

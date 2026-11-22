@@ -36,3 +36,15 @@ and the demo character/background content. Nothing else is removed.
 
 `Engine/core/node_modules` holds upstream's production dependency tree, copied
 by `Scripts/sync-core.sh`. It is not committed; it is regenerated.
+
+## Page extensions removed
+
+`public/scripts/extensions/` keeps only `regex/` (whose `engine.js` the core
+imports directly) and `shared.js`. Everything else there is a web-frontend
+plugin: each one activates by injecting `<script>`/`<link>` tags and expecting a
+browser to load them. The engine runs the core headlessly, so those activations
+never complete and the first load stalls.
+
+They are not part of the chat core: world info, macros and prompt assembly do
+not import them. Removing them is a deployment decision, not a behaviour change,
+and it is documented here so it is not mistaken for upstream content.
