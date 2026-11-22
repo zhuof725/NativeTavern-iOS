@@ -6,7 +6,10 @@
 import path from 'node:path';
 import fs from 'node:fs';
 
-const CORE = process.env.ST_ROOT || '/tmp/nt/Engine/core';
+// The core location travels in the hook URL: this code runs in a worker thread
+// whose environment and location differ from the engine's.
+const CORE = new URL(import.meta.url).searchParams.get('core')
+    || new URL('../core', import.meta.url).pathname;
 const PUBLIC = path.join(CORE, 'public');
 const BUNDLE = path.join(CORE, 'public/lib.bundle.js');
 

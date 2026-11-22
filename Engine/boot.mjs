@@ -21,6 +21,8 @@ if (!dataRoot || !path.isAbsolute(dataRoot)) {
 }
 
 const coreRoot = path.join(here, 'core');
+// The module resolution hooks need to know which tree they are serving.
+process.env.NT_CORE_ROOT = coreRoot;
 const enginePort = await pickFreePort();
 
 // Both the backend and the frontend core talk to the upstream origin.
