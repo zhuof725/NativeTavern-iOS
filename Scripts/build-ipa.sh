@@ -5,6 +5,12 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 bundle_id="${BUNDLE_IDENTIFIER:-org.example.nativetavern}"
 [[ "$bundle_id" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9][A-Za-z0-9-]*)+$ ]] || { echo 'Invalid bundle identifier.' >&2; exit 1; }
+# "-" signs ad hoc. Every Mach-O then carries a real LC_CODE_SIGNATURE and the
+# bundle carries a valid CodeResources seal, so a re-signing tool only has to
+# replace the signature instead of inventing the slot itself. Override with
+# SIGN_IDENTITY=<identity> when a keychain identity is available.
+sign_identity="${SIGN_IDENTITY:--}"
+artifact="NativeTavern-adhoc-signed.ipa"
 output="$root/artifacts"
 mkdir -p "$output"
 work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/native-tavern-build.XXXXXX")"
@@ -35,18 +41,39 @@ executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.
 }
 xcrun lipo "$app/$executable" -verify_arch arm64
 xcrun lipo "$app/Frameworks/NodeMobile.framework/NodeMobile" -verify_arch arm64
+
+# npm ships CLI shims as symlinks and the runtime archive ships mode 0644
+# binaries; both break re-signing tools and dyld. Normalise before sealing.
+python3 Scripts/prepare-bundle.py "$app" "$work/bundle"
+xattr -cr "$app"
+
+echo "Signing identity: $sign_identity"
+signed=0
+for list in "$work/bundle/frameworks.txt" "$work/bundle/binaries.txt"; do
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    codesign --force --sign "$sign_identity" --timestamp=none "$target"
+    signed=$((signed + 1))
+  done < "$list"
+done
+codesign --force --sign "$sign_identity" --timestamp=none "$app"
+codesign --verify --deep --strict --verbose=2 "$app"
+codesign -dvv "$app" 2>&1 | sed -n '1,8p'
+echo "Sealed $signed nested binaries and the app bundle."
+
 mkdir -p "$work/package/Payload"
 ditto "$app" "$work/package/Payload/NativeTavern.app"
-ipa="$output/NativeTavern-unsigned.ipa"
+ipa="$output/$artifact"
 [[ ! -e "$ipa" ]] || { echo 'Refusing to replace an existing IPA.' >&2; exit 1; }
 (cd "$work/package" && /usr/bin/zip -qry "$ipa" Payload)
 python3 Scripts/validate-ipa.py "$ipa"
-node --input-type=module - "$output/BUILD-INFO.json" <<'NODE'
+node --input-type=module - "$output/BUILD-INFO.json" "$artifact" <<'NODE'
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const receipt = {
-  artifact: 'NativeTavern-unsigned.ipa',
-  signing: 'unsigned; re-signing is required before installation',
+  artifact: process.argv[3],
+  signing: 'ad hoc signed on the runner; a device certificate must re-sign it before installation',
+  signatureState: 'Mach-O CodeDirectory and bundle CodeResources already present',
   applicationStage: 'M1 upstream core embedded',
   sillyTavernCoreIntegrated: true,
   sourceCommit: process.env.GITHUB_SHA || null,
@@ -57,5 +84,5 @@ const receipt = {
 };
 fs.writeFileSync(process.argv[2], JSON.stringify(receipt, null, 2) + '\n');
 NODE
-(cd "$output" && shasum -a 256 NativeTavern-unsigned.ipa BUILD-INFO.json > SHA256SUMS)
-echo 'Unsigned device IPA packaged, with the upstream SillyTavern core embedded.'
+(cd "$output" && shasum -a 256 "$artifact" BUILD-INFO.json > SHA256SUMS)
+echo "$artifact packaged with the upstream SillyTavern core, ad hoc signed and ready to re-sign."
