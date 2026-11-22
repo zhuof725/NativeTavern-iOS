@@ -148,6 +148,7 @@ struct ChatView: View {
                             client: client,
                             message: message,
                             characterAvatar: characterAvatar,
+                            characterName: store.characterName,
                             canSwipe: !store.busy,
                             onSwipe: { direction in
                                 Task { await store.swipe(messageId: message.id, direction: direction) }
@@ -244,51 +245,34 @@ private struct MessageRow: View {
     let client: LocalEngineClient
     let message: ChatMessage
     let characterAvatar: String
+    let characterName: String
     let canSwipe: Bool
     let onSwipe: (String) -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if message.isUser { Spacer(minLength: 40) }
-            if !message.isUser {
-                EngineImage(client: client, path: "characters/\(characterAvatar)")
-                    .frame(width: 30, height: 30)
-                    .clipShape(Circle())
-            }
-            VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
-                Text(message.isUser ? "你" : (message.name.isEmpty ? "角色" : message.name))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(message.text)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .background(
-                        message.isUser ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
-                if message.swipes.count > 1 {
-                    HStack(spacing: 8) {
-                        Button {
-                            onSwipe("left")
-                        } label: {
-                            Image(systemName: "chevron.left")
-                        }
+        VStack(alignment: message.isUser ? .trailing : .leading, spacing: 4) {
+            MessageBubble(
+                message: message,
+                characterName: characterName,
+                avatar: client,
+                characterAvatar: characterAvatar
+            )
+            if message.swipes.count > 1 {
+                HStack(spacing: 8) {
+                    Button { onSwipe("left") } label: { Image(systemName: "chevron.left") }
                         .disabled(!canSwipe)
-                        Text("\(min(message.swipeId + 1, message.swipes.count))/\(message.swipes.count)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Button {
-                            onSwipe("right")
-                        } label: {
-                            Image(systemName: "chevron.right")
-                        }
+                    Text("\(min(message.swipeId + 1, message.swipes.count))/\(message.swipes.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button { onSwipe("right") } label: { Image(systemName: "chevron.right") }
                         .disabled(!canSwipe)
-                    }
-                    .buttonStyle(.borderless)
                 }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, message.isUser ? 0 : 0)
+                .frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
             }
-            if !message.isUser { Spacer(minLength: 40) }
         }
     }
 }

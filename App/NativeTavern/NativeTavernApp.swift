@@ -55,13 +55,7 @@ private struct MainTabs: View {
             WorldInfoView(app: app)
                 .tabItem { Label("世界书", systemImage: "book.closed.fill") }
 
-            PresetsView(app: app)
-                .tabItem { Label("预设", systemImage: "slider.horizontal.3") }
-
-            ExtensionsView(app: app)
-                .tabItem { Label("扩展", systemImage: "puzzlepiece.extension") }
-
-            SettingsView(app: app)
+            NavigationStack { SettingsHomeView(app: app) }
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }
     }

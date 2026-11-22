@@ -1373,6 +1373,28 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
             presetName: String(openaiSettings.preset_settings_openai ?? ''),
             presetNames: Array.isArray(result.openai_setting_names) ? result.openai_setting_names.map(String) : [],
             worldNames: Array.isArray(result.world_names) ? result.world_names.map(String) : [],
+            // Generation parameters the settings screens edit (images 2–5).
+            maxContextUnlocked: Boolean(openaiSettings.max_context_unlocked),
+            n: Number(openaiSettings.n ?? 1),
+            seed: Number(openaiSettings.seed ?? -1),
+            namesBehavior: Number(openaiSettings.names_behavior ?? 0),
+            continuePostfix: String(openaiSettings.continue_postfix ?? ' '),
+            mediaInlining: Boolean(openaiSettings.media_inlining ?? true),
+            inlineImageQuality: String(openaiSettings.inline_image_quality ?? 'auto'),
+            reasoningEffort: String(openaiSettings.reasoning_effort ?? 'auto'),
+            postProcessing: String(openaiSettings.custom_prompt_post_processing ?? ''),
+            bypassStatusCheck: Boolean(openaiSettings.bypass_status_check),
+            showExternalModels: Boolean(openaiSettings.show_external_models),
+            autoConnect: Boolean(openaiSettings.auto_connect ?? settings.auto_connect),
+            // Connection screen extras (images 6–7).
+            logitBiasPresets: Object.keys(openaiSettings.bias_presets ?? {}),
+            logitBiasSelected: String(openaiSettings.bias_preset_selected ?? ''),
+            openrouterProviders: Array.isArray(openaiSettings.openrouter_providers) ? openaiSettings.openrouter_providers.map(String) : [],
+            azureBaseUrl: String(openaiSettings.azure_base_url ?? ''),
+            azureDeployment: String(openaiSettings.azure_deployment_name ?? ''),
+            apiKeySet: Boolean(openaiSettings.api_key_set ?? false),
+            profiles: Array.isArray(settings.connection_profiles) ? settings.connection_profiles.map((p) => String(p?.name ?? '')) : [],
+            profileSelected: String(settings.selected_connection_profile ?? ''),
         };
     });
 
@@ -1400,6 +1422,170 @@ export function createLibraryApi({ getCore, session, saveChat, restorePromptOrde
         } catch (error) {
             return { ok: false, message: `连接失败：${error?.message ?? error}` };
         }
+    });
+
+    /** Model choices the current provider reports (connection screen). */
+    define('settings.models', async () => {
+        const { modules } = await coreBundle();
+        const settings = modules.openai.oai_settings ?? {};
+        try {
+            const result = await postJson('/api/backends/chat-completions/status', {
+                chat_completion_source: settings.chat_completion_source,
+                custom_url: settings.custom_url,
+                custom_include_headers: settings.custom_include_headers,
+                reverse_proxy: settings.reverse_proxy,
+                proxy_password: settings.proxy_password,
+            });
+            if (result?.error) return { models: [], ok: false };
+            const list = Array.isArray(result?.data) ? result.data : [];
+            return {
+                ok: true,
+                models: list
+                    .map((model) => String(model?.id ?? model?.name ?? ''))
+                    .filter(Boolean)
+                    .sort(),
+            };
+        } catch (error) {
+            return { models: [], ok: false, message: String(error?.message ?? error) };
+        }
+    });
+
+    // ---- appearance, general, test message ---------------------------------
+
+    define('appearance.themes', async () => {
+        const result = await postJson('/api/settings/get');
+        const themes = Array.isArray(result?.themes) ? result.themes : [];
+        const live = { ...(result?.settings ? JSON.parse(result.settings) : {}), ...(globalThis.SillyTavern?.getContext?.().powerUserSettings ?? {}) };
+        const current = String(live.theme ?? '');
+        return {
+            themes: themes.map((theme) => String(theme?.name ?? '')).filter(Boolean),
+            current,
+        };
+    });
+
+    define('appearance.get', async () => {
+        const live = globalThis.SillyTavern?.getContext?.().powerUserSettings ?? {};
+        return {
+            fontScale: Number(live.font_scale ?? 1),
+            blur: !live.fast_ui_mode && !live.no_blur,
+            reducedMotion: Boolean(live.reduced_motion),
+        };
+    });
+
+    define('appearance.save', async (args) => {
+        const { core: api } = await coreBundle();
+        const settings = await readSettingsFile();
+        const live = globalThis.SillyTavern?.getContext?.().powerUserSettings;
+        const patch = {};
+        if (typeof args.theme === 'string' && args.theme) patch.theme = args.theme;
+        if (Number.isFinite(args.fontScale)) patch.font_scale = Number(args.fontScale);
+        if (typeof args.blur === 'boolean') patch.no_blur = !args.blur;
+        if (typeof args.reducedMotion === 'boolean') patch.reduced_motion = Boolean(args.reducedMotion);
+        Object.assign(settings, patch);
+        if (live) Object.assign(live, patch);
+        await postJson('/api/settings/save', settings);
+        try { await api.saveSettings(); } catch { /* already written */ }
+        return { saved: true, patched: Object.keys(patch) };
+    });
+
+    define('general.get', async () => {
+        const live = globalThis.SillyTavern?.getContext?.().powerUserSettings ?? {};
+        return {
+            swipes: live.swipes !== false,
+            timestamps: Boolean(live.timestamps_enabled),
+            tokenCounts: Boolean(live.message_token_count_enabled),
+            messageIds: Boolean(live.mesIDDisplay_enabled),
+            autoContinue: Boolean(live.auto_continue?.enabled),
+            autoScroll: live.auto_scroll !== false,
+        };
+    });
+
+    define('general.save', async (args) => {
+        const { core: api } = await coreBundle();
+        const settings = await readSettingsFile();
+        const live = globalThis.SillyTavern?.getContext?.().powerUserSettings;
+        const patch = {};
+        const bools = {
+            swipes: 'swipes',
+            timestamps: 'timestamps_enabled',
+            tokenCounts: 'message_token_count_enabled',
+            messageIds: 'mesIDDisplay_enabled',
+            autoScroll: 'auto_scroll',
+        };
+        for (const [key, setting] of Object.entries(bools)) {
+            if (typeof args[key] === 'boolean') patch[setting] = args[key];
+        }
+        if (typeof args.autoContinue === 'boolean') {
+            patch.auto_continue = { ...(live?.auto_continue ?? settings.auto_continue ?? {}), enabled: args.autoContinue };
+        }
+        Object.assign(settings, patch);
+        if (live) Object.assign(live, patch);
+        await postJson('/api/settings/save', settings);
+        try { await api.saveSettings(); } catch { /* already written */ }
+        return { saved: true };
+    });
+
+    /**
+     * Sends one short message end to end.
+     *
+     * Distinct from `settings.test` (a model-list probe): a provider can list
+     * models and still refuse a completion, so the connection screen offers a
+     * real request. The chat it writes to is upstream's own scratch chat.
+     */
+    define('settings.testMessage', async (args) => {
+        const { core: api, modules } = await coreBundle();
+        const text = typeof args.text === 'string' && args.text ? args.text : 'Hello';
+        const blocked = generationPreflight(api, modules);
+        if (blocked) return { error: blocked };
+        const context = globalThis.SillyTavern.getContext();
+        const before = context.chat.length;
+        context.chat.push({
+            name: String(context.name1),
+            is_user: true,
+            is_system: false,
+            send_date: String(Date.now()),
+            mes: text,
+            extra: {},
+        });
+        const result = await runGeneration(api, modules, 'normal');
+        // The probe is not part of the conversation: both turns are removed
+        // again so the connection screen leaves no trace in the chat.
+        context.chat.length = before;
+        await api.saveChatConditional().catch(() => {});
+        return { error: result.error };
+    });
+
+    // ---- backgrounds -------------------------------------------------------
+
+    define('background.list', async () => {
+        const settings = await readSettingsFile();
+        const powerUser = globalThis.SillyTavern?.getContext?.().powerUserSettings ?? {};
+        const result = await postJson('/api/backgrounds/all');
+        const images = Array.isArray(result?.images) ? result.images : [];
+        const current = String(powerUser.background ?? settings.background?.name ?? '');
+        return {
+            backgrounds: images.map((image) => ({
+                filename: String(image?.filename ?? ''),
+                animated: Boolean(image?.isAnimated),
+                current: String(image?.filename ?? '') === current,
+            })),
+            current,
+        };
+    });
+
+    define('background.select', async (args) => {
+        const { core: api } = await coreBundle();
+        const name = String(args?.name ?? '');
+        // Upstream keeps the chosen background in the power-user settings and
+        // applies it on load; the same field is written here.
+        const live = globalThis.SillyTavern?.getContext?.().powerUserSettings;
+        if (live) live.background = name;
+        const settings = await readSettingsFile();
+        if (!settings.background || typeof settings.background !== 'object') settings.background = {};
+        settings.background.name = name;
+        await postJson('/api/settings/save', settings);
+        try { await api.saveSettings(); } catch { /* the file is already written */ }
+        return { selected: name };
     });
 
     // ---- personas ----------------------------------------------------------

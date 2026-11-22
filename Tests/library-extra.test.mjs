@@ -127,6 +127,18 @@ try {
     assert.ok(extensions.extensions.some((item) => item.name === 'regex'), 'the bundled Regex extension is listed');
     console.log('ok extensions', extensions.extensions.length);
 
+    // Settings screens: appearance, general, backgrounds, test message.
+    const look = await call('appearance.get');
+    assert.equal(typeof look.fontScale, 'number');
+    const general = await call('general.get');
+    assert.equal(typeof general.swipes, 'boolean');
+    const backgrounds = await call('background.list');
+    assert.ok(Array.isArray(backgrounds.backgrounds));
+    const probe = await call('settings.testMessage', { text: 'connection probe' });
+    assert.equal(probe.error, null, 'the test message reaches the model');
+    const afterProbe = await call('chat.messages');
+    console.log('ok settings screens', 'messages after probe:', afterProbe.messages.length);
+
     await call('worldinfo.deactivateAll');
     console.log('all extra checks passed');
 } catch (error) {

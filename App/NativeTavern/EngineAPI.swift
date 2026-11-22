@@ -287,7 +287,49 @@ struct SettingsSnapshot: Decodable, Equatable {
     let presetName: String
     let presetNames: [String]
     let worldNames: [String]
+    // Generation parameters (settings → 生成参数).
+    let maxContextUnlocked: Bool
+    let n: Int
+    let seed: Double
+    let namesBehavior: Int
+    let continuePostfix: String
+    let mediaInlining: Bool
+    let inlineImageQuality: String
+    let reasoningEffort: String
+    let postProcessing: String
+    let bypassStatusCheck: Bool
+    let showExternalModels: Bool
+    let autoConnect: Bool
+    // Connection screen.
+    let logitBiasPresets: [String]
+    let logitBiasSelected: String
+    let openrouterProviders: [String]
+    let azureBaseUrl: String
+    let azureDeployment: String
+    let apiKeySet: Bool
+    let profiles: [String]
+    let profileSelected: String
 }
+
+struct BackgroundSummary: Decodable, Identifiable, Hashable {
+    let filename: String
+    let animated: Bool
+    let current: Bool
+    var id: String { filename }
+    var displayName: String { (filename as NSString).deletingPathExtension }
+}
+
+struct BackgroundListReply: Decodable {
+    let backgrounds: [BackgroundSummary]
+    let current: String
+}
+
+struct ModelListReply: Decodable {
+    let models: [String]
+    let ok: Bool
+}
+
+struct SelectedReply: Decodable { let selected: String }
 
 struct PersonaSummary: Decodable, Identifiable, Hashable {
     let avatar: String
