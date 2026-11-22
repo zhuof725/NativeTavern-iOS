@@ -11,21 +11,29 @@ struct NativeTavernApp: App {
     }
 }
 
-/// One screen, plus what a hosted page cannot provide: launch progress and the
-/// engine log after a failure.
 struct RootView: View {
     @ObservedObject var app: AppModel
 
     var body: some View {
-        NavigationStack {
-            TavernHostView(app: app)
+        Group {
+            switch app.phase {
+            case .ready:
+                MainTabs(app: app)
+            case .starting(let message):
+                LaunchView(app: app, message: message)
+            case .failed(let message):
+                LaunchFailureView(message: message)
+            }
         }
         .task {
             if !app.isReady {
                 await app.boot()
             }
         }
-        .alert("出错了", isPresented: $app.showErrorAlert) {
+        .alert("出错了", isPresented: Binding(
+            get: { app.errorMessage != nil },
+            set: { if !$0 { app.errorMessage = nil } }
+        )) {
             Button("好", role: .cancel) { app.errorMessage = nil }
         } message: {
             Text(app.errorMessage ?? "")
@@ -33,53 +41,69 @@ struct RootView: View {
     }
 }
 
-/// The engine log is the only record after a crash on a device.
-struct EngineLogView: View {
-    @State private var text: String = "（没有日志）"
+private struct MainTabs: View {
+    @ObservedObject var app: AppModel
 
     var body: some View {
-        ScrollView {
-            Text(text)
-                .font(.caption.monospaced())
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-        }
-        .navigationTitle("引擎日志")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    load()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    UIPasteboard.general.string = text
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-            }
-        }
-        .task { load() }
-    }
+        TabView {
+            CharactersView(app: app)
+                .tabItem { Label("角色", systemImage: "person.2.fill") }
 
-    private func load() {
-        text = EngineLog.read() ?? "（没有日志）"
+            WorldInfoView(app: app)
+                .tabItem { Label("世界书", systemImage: "book.closed.fill") }
+
+            PresetsView(app: app)
+                .tabItem { Label("预设", systemImage: "slider.horizontal.3") }
+
+            SettingsView(app: app)
+                .tabItem { Label("设置", systemImage: "gearshape.fill") }
+        }
     }
 }
 
-enum EngineLog {
-    static var url: URL? {
-        guard let support = try? FileManager.default.url(for: .applicationSupportDirectory,
-            in: .userDomainMask, appropriateFor: nil, create: false) else { return nil }
-        return support.appendingPathComponent("NativeTavern/engine.log")
-    }
+private struct LaunchView: View {
+    @ObservedObject var app: AppModel
+    let message: String
 
-    static func read() -> String? {
-        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return text.split(separator: "\n").suffix(400).joined(separator: "\n")
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 54))
+                .foregroundStyle(Color.accentColor)
+            Text("Native Tavern")
+                .font(.title.weight(.semibold))
+            ProgressView()
+                .controlSize(.large)
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("原版酒馆核心正在 App 内加载。首次启动会复制数据模板，通常需要半分钟。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .padding()
+    }
+}
+
+private struct LaunchFailureView: View {
+    let message: String
+
+    var body: some View {
+        NavigationStack {
+            ContentUnavailableView {
+                Label("本地引擎没有启动", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(message)
+            } actions: {
+                NavigationLink("查看引擎日志") {
+                    EngineLogView()
+                }
+                .buttonStyle(.bordered)
+            }
+            .navigationTitle("Native Tavern")
+        }
     }
 }
